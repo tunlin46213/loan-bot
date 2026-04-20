@@ -621,143 +621,52 @@ def main():
     app.add_handler(CommandHandler("start", start), group=-1)
     app.add_handler(CommandHandler("myid", myid), group=-1)
     
-    conv_handler = ConversationHandler(
+    # Common handlers to allow switching between tools from any state
+    common_handlers = [
+        MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
+        MessageHandler(filters.Regex("^📋 Score$"), start_score),
+        MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
+        MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
+    ]
+
+    main_conv = ConversationHandler(
         entry_points=[
             CommandHandler("calculator", start_calculator),
-            MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator)
-        ],
-        states={
-            METHOD: [
-                MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
-                MessageHandler(filters.Regex("^📋 Score$"), start_score),
-                MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-                MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
-                CallbackQueryHandler(select_method)
-            ],
-            AMOUNT: [
-                MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
-                MessageHandler(filters.Regex("^📋 Score$"), start_score),
-                MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-                MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)
-            ],
-            RATE: [
-                MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
-                MessageHandler(filters.Regex("^📋 Score$"), start_score),
-                MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-                MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_rate)
-            ],
-            TERM_MONTHS: [
-                MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
-                MessageHandler(filters.Regex("^📋 Score$"), start_score),
-                MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-                MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_term_months)
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel_calculator),
-            MessageHandler(filters.Regex("^📋 Score$"), start_score),
-            MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-            MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
-        ],
-        allow_reentry=True
-    )
-    app.add_handler(conv_handler)
-    
-    val_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("valuation", start_valuation),
-            MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation)
-        ],
-        states={
-            VAL_DISTRICT: [
-                MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
-                MessageHandler(filters.Regex("^📋 Score$"), start_score),
-                MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-                MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
-                CallbackQueryHandler(select_district)
-            ],
-            VAL_SIZE: [
-                MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
-                MessageHandler(filters.Regex("^📋 Score$"), start_score),
-                MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-                MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_val_size)
-            ]
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel_valuation),
-            MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
-            MessageHandler(filters.Regex("^📋 Score$"), start_score),
-            MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
-        ],
-        allow_reentry=True
-    )
-    app.add_handler(val_handler)
-    
-    score_handler = ConversationHandler(
-        entry_points=[
             CommandHandler("score", start_score),
-            MessageHandler(filters.Regex("^📋 Score$"), start_score)
-        ],
-        states={
-            SCORE_INCOME: [
-                MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
-                MessageHandler(filters.Regex("^📋 Score$"), start_score),
-                MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-                MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_income)
-            ],
-            SCORE_DEBT: [
-                MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
-                MessageHandler(filters.Regex("^📋 Score$"), start_score),
-                MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-                MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_debt)
-            ],
-            SCORE_PROP_VALUE: [
-                MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
-                MessageHandler(filters.Regex("^📋 Score$"), start_score),
-                MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-                MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_prop_value)
-            ],
-            SCORE_LOAN_AMOUNT: [
-                MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
-                MessageHandler(filters.Regex("^📋 Score$"), start_score),
-                MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-                MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_loan_amount)
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel_score),
-            MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
-            MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-            MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
-        ],
-        allow_reentry=True
-    )
-    app.add_handler(score_handler)
-    
-    # Admin Panel Handler
-    admin_conv = ConversationHandler(
-        entry_points=[
+            CommandHandler("valuation", start_valuation),
             CommandHandler("admin", admin_panel),
-            MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel)
+            *common_handlers
         ],
         states={
+            # Calculator States
+            METHOD: [*common_handlers, CallbackQueryHandler(select_method)],
+            AMOUNT: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
+            RATE: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_rate)],
+            TERM_MONTHS: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_term_months)],
+            
+            # Valuation States
+            VAL_DISTRICT: [*common_handlers, CallbackQueryHandler(select_district)],
+            VAL_SIZE: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_val_size)],
+            
+            # Score States
+            SCORE_INCOME: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_income)],
+            SCORE_DEBT: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_debt)],
+            SCORE_PROP_VALUE: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_prop_value)],
+            SCORE_LOAN_AMOUNT: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_loan_amount)],
+            
+            # Admin States
             ADMIN_MENU: [CallbackQueryHandler(admin_callback, pattern="^admin_")],
             ADMIN_REVOKE_INPUT: [CallbackQueryHandler(admin_revoke_callback, pattern="^revoke_|^admin_back$")],
-            ADMIN_ADD_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_user)],
-            ADMIN_BROADCAST_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast)],
+            ADMIN_ADD_INPUT: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_user)],
+            ADMIN_BROADCAST_INPUT: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast)],
         },
-        fallbacks=[CommandHandler("cancel", admin_cancel)],
+        fallbacks=[
+            CommandHandler("cancel", start), # Return to home on cancel
+            *common_handlers
+        ],
         allow_reentry=True
     )
-    app.add_handler(admin_conv)
+    app.add_handler(main_conv)
     
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
