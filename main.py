@@ -3,7 +3,7 @@ import os
 import csv
 from keep_alive import keep_alive
 from openai import OpenAI
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -54,16 +54,31 @@ Always reply in the exact same language (e.g. Burmese, English, etc.) as the use
 user_conversations = {}
 authenticated_users = set()
 
+def get_main_menu():
+    keyboard = [
+        [KeyboardButton("🧮 Calculator"), KeyboardButton("📋 Score")],
+        [KeyboardButton("🏢 Valuation")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 async def start(update, context):
-    await update.message.reply_text(
-        "🏦 Cambodia Real Estate Loan Bot\n\n"
-        "This bot is for BRED Bank staff only.\n"
-        "Please enter the access password to continue.\n\n"
-        "Commands:\n"
-        "/calculator - Enterprise EMI Calculator\n"
-        "/score - Loan Pre-approval Scoring\n"
-        "/valuation - Property Valuation Tool"
-    )
+    user_id = update.effective_user.id
+    if user_id in authenticated_users:
+        await update.message.reply_text(
+            "🏦 Cambodia Real Estate Loan Bot\n\n"
+            "Welcome back! Please select an option below:",
+            reply_markup=get_main_menu()
+        )
+    else:
+        await update.message.reply_text(
+            "🏦 Cambodia Real Estate Loan Bot\n\n"
+            "This bot is for BRED Bank staff only.\n"
+            "Please enter the access password to continue.\n\n"
+            "Commands:\n"
+            "/calculator - Enterprise EMI Calculator\n"
+            "/score - Loan Pre-approval Scoring\n"
+            "/valuation - Property Valuation Tool"
+        )
 
 async def handle_message(update, context):
     if not update.message or not update.message.text:
@@ -76,7 +91,10 @@ async def handle_message(update, context):
     if user_id not in authenticated_users:
         if user_text.strip() == ACCESS_CODE:
             authenticated_users.add(user_id)
-            await update.message.reply_text("✅ Access granted! You can now ask me your real estate loan questions.")
+            await update.message.reply_text(
+                "✅ Access granted! You can now ask me your real estate loan questions or use the menu below.",
+                reply_markup=get_main_menu()
+            )
         else:
             await update.message.reply_text("🔒 This bot is restricted. Please enter the correct password:")
         return
@@ -437,7 +455,10 @@ def main():
     app.add_handler(CommandHandler("start", start))
     
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("calculator", start_calculator)],
+        entry_points=[
+            CommandHandler("calculator", start_calculator),
+            MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator)
+        ],
         states={
             METHOD: [CallbackQueryHandler(select_method)],
             AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
@@ -449,7 +470,10 @@ def main():
     app.add_handler(conv_handler)
     
     val_handler = ConversationHandler(
-        entry_points=[CommandHandler("valuation", start_valuation)],
+        entry_points=[
+            CommandHandler("valuation", start_valuation),
+            MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation)
+        ],
         states={
             VAL_DISTRICT: [CallbackQueryHandler(select_district)],
             VAL_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_val_size)]
@@ -459,7 +483,10 @@ def main():
     app.add_handler(val_handler)
     
     score_handler = ConversationHandler(
-        entry_points=[CommandHandler("score", start_score)],
+        entry_points=[
+            CommandHandler("score", start_score),
+            MessageHandler(filters.Regex("^📋 Score$"), start_score)
+        ],
         states={
             SCORE_INCOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_income)],
             SCORE_DEBT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_debt)],
