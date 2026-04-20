@@ -229,10 +229,10 @@ async def get_term_months(update, context):
                 total_interest += interest
                 total_principal += principal
 
-        file_name = f"Amortization_Schedule_{update.effective_user.id}.csv"
-        with open(file_name, mode='w', newline='') as file:
+        file_name = f"Loan_Schedule_{update.effective_user.id}.csv"
+        with open(file_name, mode='w', newline='', encoding='utf-8-sig') as file:
             writer = csv.writer(file)
-            writer.writerow(["No.", "Payment", "Principal", "Interest", "Balance"])
+            writer.writerow(["លេខစဉ်", "ការបង់ប្រាក់", "ប្រាក់ដើម", "ការប្រាក់", "សមតុល្យ"])
             writer.writerows(schedule)
             
         monthly_payment = schedule[0][1] if schedule else 0
