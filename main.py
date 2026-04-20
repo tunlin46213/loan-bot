@@ -104,15 +104,24 @@ async def handle_message(update, context):
     user_text = update.message.text
 
     # --- Access Control Check ---
-    if not redis_client.sismember("auth_users", str(user_id)):
+    try:
+        is_authed = redis_client.sismember("auth_users", str(user_id))
+    except Exception as e:
+        print(f"Redis error in handle_message: {e}")
+        is_authed = False
+
+    if not is_authed:
         if user_text.strip() == ACCESS_CODE:
-            redis_client.sadd("auth_users", str(user_id))
-            # Save user info for admin panel
-            user = update.effective_user
-            redis_client.hset(f"user_info:{user_id}", mapping={
-                "name": user.full_name or "Unknown",
-                "username": user.username or ""
-            })
+            try:
+                redis_client.sadd("auth_users", str(user_id))
+                # Save user info for admin panel
+                user = update.effective_user
+                redis_client.hset(f"user_info:{user_id}", mapping={
+                    "name": user.full_name or "Unknown",
+                    "username": user.username or ""
+                })
+            except Exception as e:
+                print(f"Redis error saving user: {e}")
             await update.message.reply_text(
                 "✅ Access granted! You can now ask me your real estate loan questions or use the menu below.",
                 reply_markup=get_main_menu(user_id)
@@ -623,8 +632,7 @@ async def admin_cancel(update, context):
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    # group=-1 ensures /start and /myid always fire first, even mid-conversation
-    app.add_handler(CommandHandler("start", start), group=-1)
+    # /myid in group=-1 so it always works from any state
     app.add_handler(CommandHandler("myid", myid), group=-1)
     
     # Common handlers to allow switching between tools from any state
@@ -668,7 +676,6 @@ def main():
             ADMIN_BROADCAST_INPUT: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast)],
         },
         fallbacks=[
-            CommandHandler("start", start),
             CommandHandler("cancel", start),
             *common_handlers
         ],
