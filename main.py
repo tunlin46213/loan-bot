@@ -62,11 +62,13 @@ Always reply in the exact same language (e.g. Burmese, English, etc.) as the use
 
 user_conversations = {}
 
-def get_main_menu():
+def get_main_menu(user_id=None):
     keyboard = [
         [KeyboardButton("🧮 Calculator"), KeyboardButton("📋 Score")],
         [KeyboardButton("🏢 Valuation")]
     ]
+    if user_id and int(user_id) == ADMIN_ID:
+        keyboard.append([KeyboardButton("👑 Admin Panel")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def start(update, context):
@@ -75,7 +77,7 @@ async def start(update, context):
         await update.message.reply_text(
             "🏦 Cambodia Real Estate Loan Bot\n\n"
             "Welcome back! Please select an option below:",
-            reply_markup=get_main_menu()
+            reply_markup=get_main_menu(user_id)
         )
     else:
         await update.message.reply_text(
@@ -107,7 +109,7 @@ async def handle_message(update, context):
             })
             await update.message.reply_text(
                 "✅ Access granted! You can now ask me your real estate loan questions or use the menu below.",
-                reply_markup=get_main_menu()
+                reply_markup=get_main_menu(user_id)
             )
         else:
             await update.message.reply_text("🔒 This bot is restricted. Please enter the correct password:")
@@ -727,7 +729,10 @@ def main():
     
     # Admin Panel Handler
     admin_conv = ConversationHandler(
-        entry_points=[CommandHandler("admin", admin_panel)],
+        entry_points=[
+            CommandHandler("admin", admin_panel),
+            MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel)
+        ],
         states={
             ADMIN_MENU: [CallbackQueryHandler(admin_callback, pattern="^admin_")],
             ADMIN_REVOKE_INPUT: [CallbackQueryHandler(admin_revoke_callback, pattern="^revoke_|^admin_back$")],
