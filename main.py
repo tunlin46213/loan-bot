@@ -617,7 +617,9 @@ async def admin_cancel(update, context):
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
+    # group=-1 ensures /start and /myid always fire first, even mid-conversation
+    app.add_handler(CommandHandler("start", start), group=-1)
+    app.add_handler(CommandHandler("myid", myid), group=-1)
     
     conv_handler = ConversationHandler(
         entry_points=[
@@ -743,7 +745,6 @@ def main():
         allow_reentry=True
     )
     app.add_handler(admin_conv)
-    app.add_handler(CommandHandler("myid", myid))
     
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
