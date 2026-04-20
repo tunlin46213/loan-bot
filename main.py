@@ -465,7 +465,11 @@ def main():
             RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rate)],
             TERM_MONTHS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_term_months)],
         },
-        fallbacks=[CommandHandler("cancel", cancel_calculator)]
+        fallbacks=[
+            CommandHandler("cancel", cancel_calculator),
+            MessageHandler(filters.Regex("^📋 Score$"), start_score),
+            MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
+        ]
     )
     app.add_handler(conv_handler)
     
@@ -478,7 +482,11 @@ def main():
             VAL_DISTRICT: [CallbackQueryHandler(select_district)],
             VAL_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_val_size)]
         },
-        fallbacks=[CommandHandler("cancel", cancel_valuation)]
+        fallbacks=[
+            CommandHandler("cancel", cancel_valuation),
+            MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
+            MessageHandler(filters.Regex("^📋 Score$"), start_score),
+        ]
     )
     app.add_handler(val_handler)
     
@@ -493,7 +501,11 @@ def main():
             SCORE_PROP_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_prop_value)],
             SCORE_LOAN_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_loan_amount)],
         },
-        fallbacks=[CommandHandler("cancel", cancel_score)]
+        fallbacks=[
+            CommandHandler("cancel", cancel_score),
+            MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
+            MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
+        ]
     )
     app.add_handler(score_handler)
     
