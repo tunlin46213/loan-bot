@@ -515,11 +515,40 @@ async def admin_callback(update, context):
         )
         return ConversationHandler.END
     elif query.data == 'admin_revoke':
+        members = redis_client.smembers("auth_users")
+        if not members:
+            await query.edit_message_text("📭 No users to revoke.")
+            return ConversationHandler.END
+        keyboard = []
+        for uid in sorted(members):
+            info = redis_client.hgetall(f"user_info:{uid}")
+            name = info.get("name", "Unknown") if info else "Unknown"
+            username = info.get("username", "") if info else ""
+            label = f"❌ {name} (@{username})" if username else f"❌ {name} [{uid}]"
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"revoke_{uid}")])
+        keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_back")])
         await query.edit_message_text(
-            "❌ **Revoke User Access**\n\nEnter the **User ID** to revoke:\n_(Send /cancel to abort)_",
+            "❌ **Select user to revoke access:**",
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
         return ADMIN_REVOKE_INPUT
+    elif query.data == 'admin_back':
+        user_count = redis_client.scard("auth_users")
+        keyboard = [
+            [InlineKeyboardButton("👥 View All Users", callback_data='admin_view')],
+            [InlineKeyboardButton("❌ Revoke User", callback_data='admin_revoke'),
+             InlineKeyboardButton("➕ Add User", callback_data='admin_add')],
+            [InlineKeyboardButton("📢 Broadcast", callback_data='admin_broadcast')]
+        ]
+        await query.edit_message_text(
+            f"👑 **Admin Panel**\n\n"
+            f"📊 Total Authenticated Users: `{user_count}`\n\n"
+            f"Select an action:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        return ADMIN_MENU
     elif query.data == 'admin_add':
         await query.edit_message_text(
             "➕ **Add User Access**\n\nEnter the **User ID** to grant access:\n_(Send /cancel to abort)_",
@@ -533,16 +562,20 @@ async def admin_callback(update, context):
         )
         return ADMIN_BROADCAST_INPUT
 
-async def admin_revoke_user(update, context):
-    target_id = update.message.text.strip()
+async def admin_revoke_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    if query.data == 'admin_back':
+        return ADMIN_MENU
+    target_id = query.data.replace("revoke_", "")
     try:
         removed = redis_client.srem("auth_users", target_id)
         if removed:
-            await update.message.reply_text(f"✅ User `{target_id}` access **revoked**.", parse_mode='Markdown')
+            await query.edit_message_text(f"✅ User `{target_id}` access **revoked** successfully.", parse_mode='Markdown')
         else:
-            await update.message.reply_text(f"⚠️ User `{target_id}` not found.", parse_mode='Markdown')
+            await query.edit_message_text(f"⚠️ User `{target_id}` not found.", parse_mode='Markdown')
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        await query.edit_message_text(f"❌ Error: {e}")
     return ConversationHandler.END
 
 async def admin_add_user(update, context):
@@ -697,7 +730,7 @@ def main():
         entry_points=[CommandHandler("admin", admin_panel)],
         states={
             ADMIN_MENU: [CallbackQueryHandler(admin_callback, pattern="^admin_")],
-            ADMIN_REVOKE_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_revoke_user)],
+            ADMIN_REVOKE_INPUT: [CallbackQueryHandler(admin_revoke_callback, pattern="^revoke_|^admin_back$")],
             ADMIN_ADD_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_user)],
             ADMIN_BROADCAST_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast)],
         },
