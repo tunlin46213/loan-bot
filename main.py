@@ -235,16 +235,17 @@ async def get_term_months(update, context):
             writer.writerow(["No.", "Payment", "Principal", "Interest", "Balance"])
             writer.writerows(schedule)
             
+        monthly_payment = schedule[0][1] if schedule else 0
         msg = (
-            f"📊 **Enterprise Calculation Result**\n\n"
-            f"💰 **Loan Amount:** ${amount:,.2f}\n"
-            f"📈 **Interest Rate:** {rate}%\n"
-            f"⏳ **Term:** {months} Months\n"
+            f"📊 លទ្ធផលនៃការគណនាប្រាក់កម្ចី:\n\n"
+            f"💰 ចំនួនប្រាក់កម្ចី: ${amount:,.2f}\n"
+            f"📈 អត្រាការប្រាក់: {rate}%\n"
+            f"⏳ រយៈពេល: {months} ខែ\n"
             f"---------------------------------\n"
-            f"💵 **Total Principal Repaid:** ${total_principal:,.2f}\n"
-            f"💵 **Total Interest:** ${total_interest:,.2f}\n"
-            f"💵 **Total Payment:** ${total_payment:,.2f}\n\n"
-            f"📄 *The full monthly schedule is attached below.*"
+            f"💵 ការបង់ប្រាក់សងប្រចាំខែ: ${monthly_payment:,.2f}\n"
+            f"💵 ការប្រាក់សរុប: ${total_interest:,.2f}\n"
+            f"💵 ការទូទាត់សរុប: ${total_payment:,.2f}\n\n"
+            f"📄 តារាងបង់ប្រាក់ប្រចាំខែលម្អិតត្រូវបានភ្ជាប់ខាងលើ។"
         )
         
         with open(file_name, 'rb') as doc:
