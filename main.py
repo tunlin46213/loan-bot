@@ -500,9 +500,19 @@ def main():
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
-    keep_alive()
-    print("✅ Bot is running...")
-    app.run_polling()
+    if os.getenv("RENDER"):
+        print("✅ Starting bot via Webhook on Render...")
+        PORT = int(os.environ.get('PORT', 8080))
+        RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://loan-bot-qyzu.onrender.com')
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            webhook_url=RENDER_EXTERNAL_URL
+        )
+    else:
+        print("✅ Bot is running locally via Polling...")
+        keep_alive()
+        app.run_polling()
 
 if __name__ == "__main__":
     main()
