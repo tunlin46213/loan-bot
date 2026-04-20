@@ -3,6 +3,7 @@ import os
 import csv
 from keep_alive import keep_alive
 from openai import OpenAI
+from upstash_redis import Redis
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
@@ -26,6 +27,12 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 ACCESS_CODE = os.getenv("ACCESS_CODE", "neat17112024")
+
+# Upstash Redis Client (Persistent Storage)
+redis_client = Redis(
+    url=os.getenv("UPSTASH_REDIS_REST_URL"),
+    token=os.getenv("UPSTASH_REDIS_REST_TOKEN")
+)
 
 # Qwen Client
 qwen_client = OpenAI(
@@ -52,7 +59,6 @@ Always reply in the exact same language (e.g. Burmese, English, etc.) as the use
 """
 
 user_conversations = {}
-authenticated_users = set()
 
 def get_main_menu():
     keyboard = [
@@ -63,7 +69,7 @@ def get_main_menu():
 
 async def start(update, context):
     user_id = update.effective_user.id
-    if user_id in authenticated_users:
+    if redis_client.sismember("auth_users", str(user_id)):
         await update.message.reply_text(
             "🏦 Cambodia Real Estate Loan Bot\n\n"
             "Welcome back! Please select an option below:",
@@ -88,9 +94,9 @@ async def handle_message(update, context):
     user_text = update.message.text
 
     # --- Access Control Check ---
-    if user_id not in authenticated_users:
+    if not redis_client.sismember("auth_users", str(user_id)):
         if user_text.strip() == ACCESS_CODE:
-            authenticated_users.add(user_id)
+            redis_client.sadd("auth_users", str(user_id))
             await update.message.reply_text(
                 "✅ Access granted! You can now ask me your real estate loan questions or use the menu below.",
                 reply_markup=get_main_menu()
@@ -137,7 +143,7 @@ async def handle_message(update, context):
 
 # --- Enterprise Calculator Functions ---
 async def start_calculator(update, context):
-    if update.effective_user.id not in authenticated_users:
+    if not redis_client.sismember("auth_users", str(update.effective_user.id)):
         if update.message:
             await update.message.reply_text("🔒 Please enter the password before using the calculator.")
         return ConversationHandler.END
@@ -298,7 +304,7 @@ MEDIAN_PRICES = {
 }
 
 async def start_valuation(update, context):
-    if update.effective_user.id not in authenticated_users:
+    if not redis_client.sismember("auth_users", str(update.effective_user.id)):
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
         
@@ -350,7 +356,7 @@ async def cancel_valuation(update, context):
 
 # --- Loan Pre-approval Scoring Functions ---
 async def start_score(update, context):
-    if update.effective_user.id not in authenticated_users:
+    if not redis_client.sismember("auth_users", str(update.effective_user.id)):
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
     if update.message:
