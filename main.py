@@ -18,8 +18,9 @@ from telegram.ext import (
 (
     METHOD, AMOUNT, RATE, TERM_MONTHS, 
     VAL_DISTRICT, VAL_SIZE,
-    SCORE_INCOME, SCORE_DEBT, SCORE_PROP_VALUE, SCORE_LOAN_AMOUNT
-) = range(10)
+    SCORE_INCOME, SCORE_DEBT, SCORE_PROP_VALUE, SCORE_LOAN_AMOUNT,
+    ADMIN_MENU, ADMIN_REVOKE_INPUT, ADMIN_ADD_INPUT, ADMIN_BROADCAST_INPUT
+) = range(14)
 
 # Load .env
 load_dotenv()
@@ -27,6 +28,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 ACCESS_CODE = os.getenv("ACCESS_CODE", "neat17112024")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 # Upstash Redis Client (Persistent Storage)
 redis_client = Redis(
@@ -97,6 +99,12 @@ async def handle_message(update, context):
     if not redis_client.sismember("auth_users", str(user_id)):
         if user_text.strip() == ACCESS_CODE:
             redis_client.sadd("auth_users", str(user_id))
+            # Save user info for admin panel
+            user = update.effective_user
+            redis_client.hset(f"user_info:{user_id}", mapping={
+                "name": user.full_name or "Unknown",
+                "username": user.username or ""
+            })
             await update.message.reply_text(
                 "✅ Access granted! You can now ask me your real estate loan questions or use the menu below.",
                 reply_markup=get_main_menu()
@@ -456,6 +464,122 @@ async def cancel_score(update, context):
     return ConversationHandler.END
 # --------------------------------
 
+# --- /myid Command ---
+async def myid(update, context):
+    user = update.effective_user
+    await update.message.reply_text(
+        f"🆔 **Your Telegram User ID:**\n\n`{user.id}`\n\n"
+        f"Share this ID with the Admin to get access, or set it as ADMIN\\_ID in Render environment variables.",
+        parse_mode='Markdown'
+    )
+
+# --- Admin Panel ---
+async def admin_panel(update, context):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Access denied. You are not the admin.")
+        return ConversationHandler.END
+    user_count = redis_client.scard("auth_users")
+    keyboard = [
+        [InlineKeyboardButton("👥 View All Users", callback_data='admin_view')],
+        [InlineKeyboardButton("❌ Revoke User", callback_data='admin_revoke'),
+         InlineKeyboardButton("➕ Add User", callback_data='admin_add')],
+        [InlineKeyboardButton("📢 Broadcast", callback_data='admin_broadcast')]
+    ]
+    await update.message.reply_text(
+        f"👑 **Admin Panel**\n\n"
+        f"📊 Total Authenticated Users: `{user_count}`\n\n"
+        f"Select an action:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+    return ADMIN_MENU
+
+async def admin_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    if query.data == 'admin_view':
+        members = redis_client.smembers("auth_users")
+        if not members:
+            await query.edit_message_text("📭 No authenticated users found.")
+            return ConversationHandler.END
+        user_list = ""
+        for i, uid in enumerate(sorted(members), 1):
+            info = redis_client.hgetall(f"user_info:{uid}")
+            name = info.get("name", "Unknown") if info else "Unknown"
+            username = info.get("username", "") if info else ""
+            username_str = f" (@{username})" if username else ""
+            user_list += f"`{i}.` `{uid}` — {name}{username_str}\n"
+        await query.edit_message_text(
+            f"👥 **Authenticated Users ({len(members)})**\n\n{user_list}\nUse /admin to go back.",
+            parse_mode='Markdown'
+        )
+        return ConversationHandler.END
+    elif query.data == 'admin_revoke':
+        await query.edit_message_text(
+            "❌ **Revoke User Access**\n\nEnter the **User ID** to revoke:\n_(Send /cancel to abort)_",
+            parse_mode='Markdown'
+        )
+        return ADMIN_REVOKE_INPUT
+    elif query.data == 'admin_add':
+        await query.edit_message_text(
+            "➕ **Add User Access**\n\nEnter the **User ID** to grant access:\n_(Send /cancel to abort)_",
+            parse_mode='Markdown'
+        )
+        return ADMIN_ADD_INPUT
+    elif query.data == 'admin_broadcast':
+        await query.edit_message_text(
+            "📢 **Broadcast Message**\n\nType message to send to ALL users:\n_(Send /cancel to abort)_",
+            parse_mode='Markdown'
+        )
+        return ADMIN_BROADCAST_INPUT
+
+async def admin_revoke_user(update, context):
+    target_id = update.message.text.strip()
+    try:
+        removed = redis_client.srem("auth_users", target_id)
+        if removed:
+            await update.message.reply_text(f"✅ User `{target_id}` access **revoked**.", parse_mode='Markdown')
+        else:
+            await update.message.reply_text(f"⚠️ User `{target_id}` not found.", parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+    return ConversationHandler.END
+
+async def admin_add_user(update, context):
+    target_id = update.message.text.strip()
+    try:
+        redis_client.sadd("auth_users", target_id)
+        await update.message.reply_text(f"✅ User `{target_id}` **granted access**.", parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+    return ConversationHandler.END
+
+async def admin_broadcast(update, context):
+    message_text = update.message.text
+    members = redis_client.smembers("auth_users")
+    success = 0
+    fail = 0
+    await update.message.reply_text(f"📤 Sending to {len(members)} users...")
+    for uid in members:
+        try:
+            await context.bot.send_message(
+                chat_id=int(uid),
+                text=f"📢 *Admin Announcement*\n\n{message_text}",
+                parse_mode='Markdown'
+            )
+            success += 1
+        except Exception:
+            fail += 1
+    await update.message.reply_text(
+        f"✅ Broadcast complete!\n📤 Sent: {success}\n❌ Failed: {fail}"
+    )
+    return ConversationHandler.END
+
+async def admin_cancel(update, context):
+    if update.message:
+        await update.message.reply_text("❌ Admin action cancelled.")
+    return ConversationHandler.END
+
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -567,6 +691,21 @@ def main():
         allow_reentry=True
     )
     app.add_handler(score_handler)
+    
+    # Admin Panel Handler
+    admin_conv = ConversationHandler(
+        entry_points=[CommandHandler("admin", admin_panel)],
+        states={
+            ADMIN_MENU: [CallbackQueryHandler(admin_callback, pattern="^admin_")],
+            ADMIN_REVOKE_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_revoke_user)],
+            ADMIN_ADD_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_user)],
+            ADMIN_BROADCAST_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast)],
+        },
+        fallbacks=[CommandHandler("cancel", admin_cancel)],
+        allow_reentry=True
+    )
+    app.add_handler(admin_conv)
+    app.add_handler(CommandHandler("myid", myid))
     
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
