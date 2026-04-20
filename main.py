@@ -72,12 +72,17 @@ def get_main_menu(user_id=None):
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def start(update, context):
-    user_id = update.effective_user.id
-    if redis_client.sismember("auth_users", str(user_id)):
+    try:
+        user_id = update.effective_user.id
+        is_authed = redis_client.sismember("auth_users", str(user_id))
+    except Exception:
+        is_authed = False
+    
+    if is_authed:
         await update.message.reply_text(
             "🏦 Cambodia Real Estate Loan Bot\n\n"
             "Welcome back! Please select an option below:",
-            reply_markup=get_main_menu(user_id)
+            reply_markup=get_main_menu(update.effective_user.id)
         )
     else:
         await update.message.reply_text(
@@ -89,6 +94,7 @@ async def start(update, context):
             "/score - Loan Pre-approval Scoring\n"
             "/valuation - Property Valuation Tool"
         )
+    return ConversationHandler.END
 
 async def handle_message(update, context):
     if not update.message or not update.message.text:
@@ -631,6 +637,7 @@ def main():
 
     main_conv = ConversationHandler(
         entry_points=[
+            CommandHandler("start", start),
             CommandHandler("calculator", start_calculator),
             CommandHandler("score", start_score),
             CommandHandler("valuation", start_valuation),
@@ -661,12 +668,23 @@ def main():
             ADMIN_BROADCAST_INPUT: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast)],
         },
         fallbacks=[
-            CommandHandler("cancel", start), # Return to home on cancel
+            CommandHandler("start", start),
+            CommandHandler("cancel", start),
             *common_handlers
         ],
         allow_reentry=True
     )
     app.add_handler(main_conv)
+    
+    async def error_handler(update, context):
+        import traceback
+        print(f"\u274c Error: {context.error}")
+        traceback.print_exc()
+        if update and hasattr(update, 'message') and update.message:
+            await update.message.reply_text(
+                "⚠️ Something went wrong. Please try /start again."
+            )
+    app.add_error_handler(error_handler)
     
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
