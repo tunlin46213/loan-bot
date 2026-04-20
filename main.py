@@ -467,21 +467,25 @@ def main():
         ],
         states={
             METHOD: [
+                MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
                 MessageHandler(filters.Regex("^📋 Score$"), start_score),
                 MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
                 CallbackQueryHandler(select_method)
             ],
             AMOUNT: [
+                MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
                 MessageHandler(filters.Regex("^📋 Score$"), start_score),
                 MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)
             ],
             RATE: [
+                MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
                 MessageHandler(filters.Regex("^📋 Score$"), start_score),
                 MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_rate)
             ],
             TERM_MONTHS: [
+                MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
                 MessageHandler(filters.Regex("^📋 Score$"), start_score),
                 MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_term_months)
@@ -491,7 +495,8 @@ def main():
             CommandHandler("cancel", cancel_calculator),
             MessageHandler(filters.Regex("^📋 Score$"), start_score),
             MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-        ]
+        ],
+        allow_reentry=True
     )
     app.add_handler(conv_handler)
     
@@ -504,11 +509,13 @@ def main():
             VAL_DISTRICT: [
                 MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
                 MessageHandler(filters.Regex("^📋 Score$"), start_score),
+                MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
                 CallbackQueryHandler(select_district)
             ],
             VAL_SIZE: [
                 MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
                 MessageHandler(filters.Regex("^📋 Score$"), start_score),
+                MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_val_size)
             ]
         },
@@ -516,7 +523,8 @@ def main():
             CommandHandler("cancel", cancel_valuation),
             MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
             MessageHandler(filters.Regex("^📋 Score$"), start_score),
-        ]
+        ],
+        allow_reentry=True
     )
     app.add_handler(val_handler)
     
@@ -528,21 +536,25 @@ def main():
         states={
             SCORE_INCOME: [
                 MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
+                MessageHandler(filters.Regex("^📋 Score$"), start_score),
                 MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_income)
             ],
             SCORE_DEBT: [
                 MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
+                MessageHandler(filters.Regex("^📋 Score$"), start_score),
                 MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_debt)
             ],
             SCORE_PROP_VALUE: [
                 MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
+                MessageHandler(filters.Regex("^📋 Score$"), start_score),
                 MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_prop_value)
             ],
             SCORE_LOAN_AMOUNT: [
                 MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
+                MessageHandler(filters.Regex("^📋 Score$"), start_score),
                 MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_loan_amount)
             ],
@@ -551,7 +563,8 @@ def main():
             CommandHandler("cancel", cancel_score),
             MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
             MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-        ]
+        ],
+        allow_reentry=True
     )
     app.add_handler(score_handler)
     
