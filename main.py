@@ -1,8 +1,10 @@
 from dotenv import load_dotenv
 import os
-import csv
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 from keep_alive import keep_alive
 from openai import OpenAI
 from upstash_redis import Redis
@@ -322,50 +324,147 @@ async def get_term_months(update, context):
         }
         method_label_kh = method_labels_khmer.get(method, method_label)
 
-        # --- Write professional CSV ---
-        file_name = f"Loan_Schedule_{update.effective_user.id}.csv"
-        with open(file_name, mode='w', newline='', encoding='utf-8-sig') as file:
-            writer = csv.writer(file)
+        # ── Styles ────────────────────────────────────────────
+        C_DARK_BLUE  = "1F3864"
+        C_MED_BLUE   = "2E75B6"
+        C_LIGHT_BLUE = "D9E2F3"
+        C_ALT_BLUE   = "BDD7EE"
+        C_ORANGE_TXT = "C45911"
+        C_ORANGE_BG  = "F4B183"
+        C_WHITE      = "FFFFFF"
 
-            # ====== SECTION 1: ENTER VALUES ======
-            writer.writerow(['ENTER VALUES', '', '', '', 'LOAN SUMMARY', ''])
-            writer.writerow(['Loan amount', f'${amount:,.2f}', '', '', 'Scheduled payment', first_payment])
-            writer.writerow(['Annual interest rate', f'{rate:.2f}%', '', '', 'Scheduled number of payments', months])
-            writer.writerow(['Loan period in months', months, '', '', 'Actual number of payments', actual_payments])
-            writer.writerow(['Number of payments per year', 12, '', '', 'Total early payments', '$0.00'])
-            writer.writerow(['Start date of loan', start_date.strftime('%m/%d/%Y'), '', '', 'Total interest', f'${total_interest:,.2f}'])
-            writer.writerow([])
-            writer.writerow(['Optional extra payments', '$0.00'])
-            writer.writerow([])
-            writer.writerow(['LENDER NAME', 'BRED BANK Cambodia'])
-            writer.writerow(['Repayment Method', method_label])
-            writer.writerow([])
+        f_title  = Font(name="Calibri", bold=True,  size=11, underline="single")
+        f_hdr    = Font(name="Calibri", bold=True,  size=10, color=C_WHITE)
+        f_label  = Font(name="Calibri",             size=10, color="404040")
+        f_val    = Font(name="Calibri", bold=True,  size=10, color=C_ORANGE_TXT)
+        f_data   = Font(name="Calibri",             size=10)
+        f_total  = Font(name="Calibri", bold=True,  size=10)
+        f_lender = Font(name="Calibri", bold=True,  size=11)
+        f_method = Font(name="Calibri", bold=True, italic=True, size=10, color=C_MED_BLUE)
 
-            # ====== SECTION 2: AMORTIZATION TABLE ======
-            writer.writerow([
-                'PMT NO',
-                'PAYMENT DATE',
-                'BEGINNING BALANCE',
-                'SCHEDULED PAYMENT',
-                'EXTRA PAYMENT',
-                'TOTAL PAYMENT',
-                'PRINCIPAL',
-                'INTEREST',
-                'ENDING BALANCE',
-                'CUMULATIVE INTEREST',
-            ])
-            writer.writerows(schedule_rows)
+        fl_hdr    = PatternFill("solid", fgColor=C_DARK_BLUE)
+        fl_orange = PatternFill("solid", fgColor=C_ORANGE_BG)
+        fl_even   = PatternFill("solid", fgColor=C_LIGHT_BLUE)
+        fl_total  = PatternFill("solid", fgColor=C_ALT_BLUE)
 
-            # ====== SECTION 3: TOTALS ROW ======
-            writer.writerow([])
-            writer.writerow([
-                'TOTAL', '', '',
-                '', '',
-                f'${total_payment:,.2f}',
-                f'${total_principal:,.2f}',
-                f'${total_interest:,.2f}',
-                '', ''
-            ])
+        def _thin(color="B8CCE4"):
+            s = Side(style="thin", color=color)
+            return Border(left=s, right=s, top=s, bottom=s)
+
+        def _hdr_border():
+            s = Side(style="medium", color=C_WHITE)
+            return Border(left=s, right=s, top=s, bottom=s)
+
+        a_c = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        a_r = Alignment(horizontal="right",  vertical="center")
+        a_l = Alignment(horizontal="left",   vertical="center")
+
+        # ── Workbook ──────────────────────────────────────────
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Loan Amortization"
+
+        col_widths = [6, 14, 18, 18, 14, 16, 14, 12, 16, 19]
+        for i, w in enumerate(col_widths, 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+
+        def put(r, c, v="", font=f_label, fill=None, align=a_l, border=None):
+            cl = ws.cell(row=r, column=c, value=v)
+            cl.font = font
+            if fill:   cl.fill   = fill
+            cl.alignment = align
+            if border: cl.border = border
+            return cl
+
+        def merge(r, c1, c2):
+            ws.merge_cells(start_row=r, start_column=c1,
+                           end_row=r,   end_column=c2)
+
+        # ══ SECTION 1 – Header ═══════════════════════════════
+        row = 1
+        ws.row_dimensions[row].height = 18
+        merge(row, 1, 5); put(row, 1, "ENTER VALUES",  font=f_title)
+        merge(row, 6,10); put(row, 6, "LOAN SUMMARY",  font=f_title)
+        row += 1
+
+        # Enter Values rows (left) + Loan Summary rows (right)
+        e_rows = [
+            ("Loan amount",               f"${amount:,.2f}"),
+            ("Annual interest rate",      f"{rate:.2f}%"),
+            ("Loan period in months",     str(months)),
+            ("Number of payments / year", "12"),
+            ("Start date of loan",        start_date.strftime("%m/%d/%Y")),
+        ]
+        s_rows = [
+            ("Scheduled payment",            first_payment),
+            ("Scheduled number of payments", str(months)),
+            ("Actual number of payments",    str(actual_payments)),
+            ("Total early payments",         "$0.00"),
+            ("Total interest",               f"${total_interest:,.2f}"),
+        ]
+        for (el, ev), (sl, sv) in zip(e_rows, s_rows):
+            ws.row_dimensions[row].height = 16
+            merge(row, 1, 2); put(row, 1, el, border=_thin())
+            merge(row, 3, 5); put(row, 3, ev, font=f_val, fill=fl_orange, align=a_r, border=_thin())
+            merge(row, 6, 7); put(row, 6, sl, border=_thin())
+            merge(row, 8,10); put(row, 8, sv, font=f_val, fill=fl_orange, align=a_r, border=_thin())
+            row += 1
+
+        # Optional extra payments
+        ws.row_dimensions[row].height = 16
+        merge(row, 1, 2); put(row, 1, "Optional extra payments", border=_thin())
+        merge(row, 3, 5); put(row, 3, "$0.00", font=f_val, fill=fl_orange, align=a_r, border=_thin())
+        row += 2  # blank gap
+
+        # Lender Name + Repayment Method
+        ws.row_dimensions[row].height = 18
+        merge(row, 1, 2); put(row, 1, "LENDER NAME", font=f_lender, border=_thin())
+        merge(row, 3, 5); put(row, 3, "BRED BANK Cambodia",
+                               font=Font(name="Calibri", bold=True, size=11, color=C_MED_BLUE),
+                               align=a_c, border=_thin())
+        merge(row, 6, 7); put(row, 6, "Repayment Method", font=f_lender, border=_thin())
+        merge(row, 8,10); put(row, 8, method_label, font=f_method, align=a_r, border=_thin())
+        row += 2  # blank gap
+
+        # ══ SECTION 2 – Table Header ══════════════════════════
+        ws.row_dimensions[row].height = 36
+        col_headers = [
+            "PMT\nNO", "PAYMENT\nDATE", "BEGINNING\nBALANCE",
+            "SCHEDULED\nPAYMENT", "EXTRA\nPAYMENT", "TOTAL\nPAYMENT",
+            "PRINCIPAL", "INTEREST", "ENDING\nBALANCE", "CUMULATIVE\nINTEREST"
+        ]
+        for c, h in enumerate(col_headers, 1):
+            put(row, c, h, font=f_hdr, fill=fl_hdr, align=a_c, border=_hdr_border())
+        row += 1
+
+        # Freeze panes below header + lender info
+        ws.freeze_panes = ws.cell(row=row, column=1)
+
+        # ══ SECTION 3 – Data Rows ═════════════════════════════
+        for i, sr in enumerate(schedule_rows):
+            fill = fl_even if i % 2 == 0 else None
+            ws.row_dimensions[row].height = 15
+            for c, val in enumerate(sr, 1):
+                al = a_c if c <= 2 else a_r
+                put(row, c, val, font=f_data, fill=fill, align=al, border=_thin())
+            row += 1
+
+        # ══ SECTION 4 – Totals Row ════════════════════════════
+        ws.row_dimensions[row].height = 18
+        merge(row, 1, 5); put(row, 1, "TOTAL", font=f_total, fill=fl_total, align=a_c, border=_thin())
+        totals_vals = [
+            (6,  f"${total_payment:,.2f}"),
+            (7,  f"${total_principal:,.2f}"),
+            (8,  f"${total_interest:,.2f}"),
+            (9,  ""),
+            (10, ""),
+        ]
+        for c, v in totals_vals:
+            put(row, c, v, font=f_total, fill=fl_total, align=a_r, border=_thin())
+
+        # ── Save ──────────────────────────────────────────────
+        file_name = f"Loan_Schedule_{update.effective_user.id}.xlsx"
+        wb.save(file_name)
 
         msg = (
             f"📊 **លទ្ធផលតារាងបង់ប្រាក់កម្ចី**\n"
