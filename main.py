@@ -1,7 +1,13 @@
 from dotenv import load_dotenv
 import os
 import csv
-from keep_alive import keep_alive
+import traceback
+try:
+    from keep_alive import keep_alive
+except Exception as e:
+    print(f"Warning: Could not import keep_alive: {e}")
+    keep_alive = lambda: None
+
 from openai import OpenAI
 from upstash_redis import Redis
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
@@ -699,19 +705,14 @@ def main():
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
-    if os.getenv("RENDER"):
-        print("✅ Starting bot via Webhook on Render...")
-        PORT = int(os.environ.get('PORT', 8080))
-        RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://loan-bot-qyzu.onrender.com')
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            webhook_url=RENDER_EXTERNAL_URL
-        )
-    else:
-        print("✅ Bot is running locally via Polling...")
+    print("✅ Starting bot via Polling...")
+    try:
         keep_alive()
-        app.run_polling()
+        print("✅ Keep-alive barebones server started on port 8080.")
+    except Exception as e:
+        print(f"⚠️ Could not start keep_alive server: {e}")
+
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
