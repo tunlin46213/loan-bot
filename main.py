@@ -62,6 +62,14 @@ Always reply in the exact same language (e.g. Burmese, English, etc.) as the use
 
 user_conversations = {}
 
+def check_user_authed(user_id):
+    try:
+        return redis_client.sismember("auth_users", str(user_id))
+    except Exception as e:
+        print(f"Redis auth check error: {e}")
+        return False
+
+
 def get_main_menu(user_id=None):
     keyboard = [
         [KeyboardButton("🧮 Calculator"), KeyboardButton("📋 Score")],
@@ -72,11 +80,9 @@ def get_main_menu(user_id=None):
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def start(update, context):
-    try:
-        user_id = update.effective_user.id
-        is_authed = redis_client.sismember("auth_users", str(user_id))
-    except Exception:
-        is_authed = False
+    user_id = update.effective_user.id
+    is_authed = check_user_authed(user_id)
+
     
     if is_authed:
         await update.message.reply_text(
@@ -104,11 +110,8 @@ async def handle_message(update, context):
     user_text = update.message.text
 
     # --- Access Control Check ---
-    try:
-        is_authed = redis_client.sismember("auth_users", str(user_id))
-    except Exception as e:
-        print(f"Redis error in handle_message: {e}")
-        is_authed = False
+    is_authed = check_user_authed(user_id)
+
 
     if not is_authed:
         if user_text.strip() == ACCESS_CODE:
@@ -168,7 +171,7 @@ async def handle_message(update, context):
 
 # --- Enterprise Calculator Functions ---
 async def start_calculator(update, context):
-    if not redis_client.sismember("auth_users", str(update.effective_user.id)):
+    if not check_user_authed(update.effective_user.id):
         if update.message:
             await update.message.reply_text("🔒 Please enter the password before using the calculator.")
         return ConversationHandler.END
@@ -329,7 +332,7 @@ MEDIAN_PRICES = {
 }
 
 async def start_valuation(update, context):
-    if not redis_client.sismember("auth_users", str(update.effective_user.id)):
+    if not check_user_authed(update.effective_user.id):
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
         
@@ -381,7 +384,7 @@ async def cancel_valuation(update, context):
 
 # --- Loan Pre-approval Scoring Functions ---
 async def start_score(update, context):
-    if not redis_client.sismember("auth_users", str(update.effective_user.id)):
+    if not check_user_authed(update.effective_user.id):
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
     if update.message:
