@@ -1,16 +1,12 @@
 from dotenv import load_dotenv
 import os
 import csv
-import traceback
-try:
-    from keep_alive import keep_alive
-except Exception as e:
-    print(f"Warning: Could not import keep_alive: {e}")
-    keep_alive = lambda: None
-
+from datetime import datetime, date
+from dateutil.relativedelta import relativedelta
+from keep_alive import keep_alive
 from openai import OpenAI
 from upstash_redis import Redis
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardRemove
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -68,36 +64,28 @@ Always reply in the exact same language (e.g. Burmese, English, etc.) as the use
 
 user_conversations = {}
 
-def get_cancel_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='cancel_flow')]])
-
-async def cancel_flow(update, context):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("❌ Action cancelled. You can ask me any loan questions.")
-    return ConversationHandler.END
-
-def check_user_authed(user_id):
-    try:
-        return redis_client.sismember("auth_users", str(user_id))
-    except Exception as e:
-        print(f"Redis auth check error: {e}")
-        return False
-
-
-
+def get_main_menu(user_id=None):
+    keyboard = [
+        [KeyboardButton("🧮 Calculator"), KeyboardButton("📋 Score")],
+        [KeyboardButton("🏢 Valuation")]
+    ]
+    if user_id and int(user_id) == ADMIN_ID:
+        keyboard.append([KeyboardButton("👑 Admin Panel")])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def start(update, context):
-    user_id = update.effective_user.id
-    is_authed = check_user_authed(user_id)
-
+    try:
+        user_id = update.effective_user.id
+        is_authed = redis_client.sismember("auth_users", str(user_id))
+    except Exception:
+        is_authed = False
     
     if is_authed:
         await update.message.reply_text(
-            "Welcome back! Please select an option from the menu below:",
-            reply_markup=ReplyKeyboardRemove()
+            "🏦 Cambodia Real Estate Loan Bot\n\n"
+            "Welcome back! Please select an option below:",
+            reply_markup=get_main_menu(update.effective_user.id)
         )
-        return ConversationHandler.END
     else:
         await update.message.reply_text(
             "🏦 Cambodia Real Estate Loan Bot\n\n"
@@ -118,25 +106,28 @@ async def handle_message(update, context):
     user_text = update.message.text
 
     # --- Access Control Check ---
-    is_authed = check_user_authed(user_id)
-
+    try:
+        is_authed = redis_client.sismember("auth_users", str(user_id))
+    except Exception as e:
+        print(f"Redis error in handle_message: {e}")
+        is_authed = False
 
     if not is_authed:
         if user_text.strip() == ACCESS_CODE:
             try:
                 redis_client.sadd("auth_users", str(user_id))
+                # Save user info for admin panel
                 user = update.effective_user
                 redis_client.hset(f"user_info:{user_id}", mapping={
                     "name": user.full_name or "Unknown",
                     "username": user.username or ""
                 })
-                await update.message.reply_text(
-                    "✅ Access granted! You can now ask me your real estate loan questions or use the menu below.",
-                    reply_markup=ReplyKeyboardRemove()
-                )
             except Exception as e:
                 print(f"Redis error saving user: {e}")
-                await update.message.reply_text("❌ Database Error: Could not save your login. Ensure UPSTASH_REDIS Environment Variables are set on Render.")
+            await update.message.reply_text(
+                "✅ Access granted! You can now ask me your real estate loan questions or use the menu below.",
+                reply_markup=get_main_menu(user_id)
+            )
         else:
             await update.message.reply_text("🔒 This bot is restricted. Please enter the correct password:")
         return
@@ -155,21 +146,15 @@ async def handle_message(update, context):
         action="typing"
     )
 
+    response = qwen_client.chat.completions.create(
+        model="qwen/qwen-plus",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            *user_conversations[user_id]
+        ]
+    )
 
-    try:
-        response = qwen_client.chat.completions.create(
-            model="qwen/qwen-plus",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                *user_conversations[user_id]
-            ]
-        )
-
-        bot_reply = response.choices[0].message.content
-    except Exception as e:
-        print(f"OpenAI/Qwen API Error: {e}")
-        await update.message.reply_text("⚠️ AI Service Error: Please make sure your DASHSCOPE_API_KEY Environment Variable is set correctly on Render.")
-        return
+    bot_reply = response.choices[0].message.content
 
     user_conversations[user_id].append({
         "role": "assistant",
@@ -185,7 +170,7 @@ async def handle_message(update, context):
 
 # --- Enterprise Calculator Functions ---
 async def start_calculator(update, context):
-    if not check_user_authed(update.effective_user.id):
+    if not redis_client.sismember("auth_users", str(update.effective_user.id)):
         if update.message:
             await update.message.reply_text("🔒 Please enter the password before using the calculator.")
         return ConversationHandler.END
@@ -214,27 +199,27 @@ async def select_method(update, context):
     elif query.data == 'bullet':
         method_name = "Principal Bullet Repayment"
         
-    await query.edit_message_text(f"✅ Selected: **{method_name}**\n\n💰 Please enter the **Loan Amount** in USD (e.g. 100000):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
+    await query.edit_message_text(f"✅ Selected: **{method_name}**\n\n💰 Please enter the **Loan Amount** in USD (e.g. 100000):", parse_mode='Markdown')
     return AMOUNT
 
 async def get_amount(update, context):
     try:
         text = update.message.text.replace(',', '').replace('$', '')
         context.user_data['amount'] = float(text)
-        await update.message.reply_text("📈 Enter the **Annual Interest Rate** in % (e.g. 8.5):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
+        await update.message.reply_text("📈 Enter the **Annual Interest Rate** in % (e.g. 8.5):", parse_mode='Markdown')
         return RATE
     except ValueError:
-        await update.message.reply_text("❌ Invalid format. Please enter a number for Loan Amount (e.g. 100000):", reply_markup=get_cancel_keyboard())
+        await update.message.reply_text("❌ Invalid format. Please enter a number for Loan Amount (e.g. 100000):")
         return AMOUNT
 
 async def get_rate(update, context):
     try:
         text = update.message.text.replace('%', '')
         context.user_data['rate'] = float(text)
-        await update.message.reply_text("⏳ Enter the **Loan Term in Months** (e.g. 54, 368):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
+        await update.message.reply_text("⏳ Enter the **Loan Term in Months** (e.g. 54, 368):", parse_mode='Markdown')
         return TERM_MONTHS
     except ValueError:
-        await update.message.reply_text("❌ Invalid format. Please enter a number for Interest Rate (e.g. 8.5):", reply_markup=get_cancel_keyboard())
+        await update.message.reply_text("❌ Invalid format. Please enter a number for Interest Rate (e.g. 8.5):")
         return RATE
 
 async def get_term_months(update, context):
@@ -243,89 +228,168 @@ async def get_term_months(update, context):
         amount = context.user_data['amount']
         rate = context.user_data['rate']
         method = context.user_data['method']
-        
-        schedule = []
+
+        # --- Method label ---
+        method_labels = {
+            'emi':             'Principal + Interest Equal (EMI)',
+            'equal_principal': 'Principal Equal Payment',
+            'bullet':          'Principal Bullet Repayment',
+        }
+        method_label = method_labels.get(method, method)
+
         balance = amount
         monthly_rate = (rate / 100) / 12
-        
+        start_date = date.today()
+
+        # --- Pre-calculate scheduled payment for header ---
+        if method == 'emi':
+            if monthly_rate > 0:
+                scheduled_payment = amount * monthly_rate * ((1 + monthly_rate)**months) / (((1 + monthly_rate)**months) - 1)
+            else:
+                scheduled_payment = amount / months
+            actual_payments = months
+        elif method == 'equal_principal':
+            principal_payment = amount / months
+            scheduled_payment = principal_payment + (amount * monthly_rate)  # First payment (highest)
+            actual_payments = months
+        elif method == 'bullet':
+            scheduled_payment = amount * monthly_rate  # Monthly interest only
+            actual_payments = months
+        else:
+            scheduled_payment = 0
+            actual_payments = months
+
+        # --- Build amortization schedule rows ---
+        schedule_rows = []
         total_payment = 0
         total_interest = 0
         total_principal = 0
+        cumulative_interest = 0
+        balance = amount
 
-        if method == 'emi':
-            if monthly_rate > 0:
-                payment = amount * monthly_rate * ((1 + monthly_rate)**months) / (((1 + monthly_rate)**months) - 1)
-            else:
-                payment = amount / months
-                
-            for i in range(1, months + 1):
-                interest = balance * monthly_rate
-                principal = payment - interest
+        for i in range(1, months + 1):
+            beginning_balance = balance
+            payment_date = (start_date + relativedelta(months=i)).strftime('%m/%d/%Y')
+            interest = beginning_balance * monthly_rate
+            extra_payment = 0.0
+
+            if method == 'emi':
+                sched_pay = scheduled_payment
+                principal = sched_pay - interest
+                if i == months:  # Final payment adjustment
+                    principal = beginning_balance
+                    sched_pay = principal + interest
+            elif method == 'equal_principal':
+                principal = amount / months
+                sched_pay = principal + interest
+            elif method == 'bullet':
                 if i == months:
-                    principal = balance
-                    payment = principal + interest
-                balance -= principal
-                schedule.append([i, round(payment, 2), round(principal, 2), round(interest, 2), round(max(0, balance), 2)])
-                total_payment += payment
-                total_interest += interest
-                total_principal += principal
-                
-        elif method == 'equal_principal':
-            principal_payment = amount / months
-            for i in range(1, months + 1):
-                interest = balance * monthly_rate
-                payment = principal_payment + interest
-                balance -= principal_payment
-                schedule.append([i, round(payment, 2), round(principal_payment, 2), round(interest, 2), round(max(0, balance), 2)])
-                total_payment += payment
-                total_interest += interest
-                total_principal += principal_payment
-                
-        elif method == 'bullet':
-            for i in range(1, months + 1):
-                interest = balance * monthly_rate
-                if i == months:
-                    principal = balance
+                    principal = beginning_balance
                 else:
-                    principal = 0
-                payment = principal + interest
-                balance -= principal
-                schedule.append([i, round(payment, 2), round(principal, 2), round(interest, 2), round(max(0, balance), 2)])
-                total_payment += payment
-                total_interest += interest
-                total_principal += principal
+                    principal = 0.0
+                sched_pay = principal + interest
+            else:
+                principal = 0
+                sched_pay = interest
 
+            total_pay = round(sched_pay + extra_payment, 2)
+            principal = round(principal, 2)
+            interest = round(interest, 2)
+            sched_pay = round(sched_pay, 2)
+            ending_balance = round(max(0.0, beginning_balance - principal), 2)
+            cumulative_interest = round(cumulative_interest + interest, 2)
+
+            schedule_rows.append([
+                i,
+                payment_date,
+                f"${beginning_balance:,.2f}",
+                f"${sched_pay:,.2f}",
+                f"${extra_payment:,.2f}",
+                f"${total_pay:,.2f}",
+                f"${principal:,.2f}",
+                f"${interest:,.2f}",
+                f"${ending_balance:,.2f}",
+                f"${cumulative_interest:,.2f}",
+            ])
+
+            balance = ending_balance
+            total_payment += total_pay
+            total_interest += interest
+            total_principal += principal
+
+        first_payment = schedule_rows[0][3] if schedule_rows else '$0.00'
+
+        # --- Write professional CSV ---
         file_name = f"Loan_Schedule_{update.effective_user.id}.csv"
         with open(file_name, mode='w', newline='', encoding='utf-8-sig') as file:
             writer = csv.writer(file)
-            writer.writerow(["លេខរៀង", "ការបង់ប្រាក់", "ប្រាក់ដើម", "ការប្រាក់", "សមតុល្យ"])
-            writer.writerows(schedule)
-            
-        monthly_payment = schedule[0][1] if schedule else 0
+
+            # ====== SECTION 1: ENTER VALUES ======
+            writer.writerow(['ENTER VALUES', '', '', '', 'LOAN SUMMARY', ''])
+            writer.writerow(['Loan amount', f'${amount:,.2f}', '', '', 'Scheduled payment', first_payment])
+            writer.writerow(['Annual interest rate', f'{rate:.2f}%', '', '', 'Scheduled number of payments', months])
+            writer.writerow(['Loan period in months', months, '', '', 'Actual number of payments', actual_payments])
+            writer.writerow(['Number of payments per year', 12, '', '', 'Total early payments', '$0.00'])
+            writer.writerow(['Start date of loan', start_date.strftime('%m/%d/%Y'), '', '', 'Total interest', f'${total_interest:,.2f}'])
+            writer.writerow([])
+            writer.writerow(['Optional extra payments', '$0.00'])
+            writer.writerow([])
+            writer.writerow(['LENDER NAME', 'BRED BANK Cambodia'])
+            writer.writerow(['Repayment Method', method_label])
+            writer.writerow([])
+
+            # ====== SECTION 2: AMORTIZATION TABLE ======
+            writer.writerow([
+                'PMT NO',
+                'PAYMENT DATE',
+                'BEGINNING BALANCE',
+                'SCHEDULED PAYMENT',
+                'EXTRA PAYMENT',
+                'TOTAL PAYMENT',
+                'PRINCIPAL',
+                'INTEREST',
+                'ENDING BALANCE',
+                'CUMULATIVE INTEREST',
+            ])
+            writer.writerows(schedule_rows)
+
+            # ====== SECTION 3: TOTALS ROW ======
+            writer.writerow([])
+            writer.writerow([
+                'TOTAL', '', '',
+                '', '',
+                f'${total_payment:,.2f}',
+                f'${total_principal:,.2f}',
+                f'${total_interest:,.2f}',
+                '', ''
+            ])
+
         msg = (
-            f"📊 លទ្ធផលនៃការគណនាប្រាក់កម្ចី:\n\n"
-            f"💰 ចំនួនប្រាក់កម្ចី: ${amount:,.2f}\n"
-            f"📈 អត្រាការប្រាក់: {rate}%\n"
-            f"⏳ រយៈពេល: {months} ខែ\n"
-            f"---------------------------------\n"
-            f"💵 ការបង់ប្រាក់សងប្រចាំខែ: ${monthly_payment:,.2f}\n"
-            f"💵 ការប្រាក់សរុប: ${total_interest:,.2f}\n"
-            f"💵 ការទូទាត់សរុប: ${total_payment:,.2f}\n\n"
-            f"📄 តារាងបង់ប្រាក់ប្រចាំខែលម្អិតត្រូវបានភ្ជាប់ខាងលើ។"
+            f"📊 **Loan Amortization Schedule**\n"
+            f"Method: {method_label}\n\n"
+            f"💰 Loan Amount: `${amount:,.2f}`\n"
+            f"📈 Annual Rate: `{rate}%`\n"
+            f"⏳ Term: `{months}` months\n"
+            f"📅 Start Date: `{start_date.strftime('%m/%d/%Y')}`\n"
+            f"─────────────────────────\n"
+            f"💵 Scheduled Payment: `{first_payment}`\n"
+            f"💵 Total Interest: `${total_interest:,.2f}`\n"
+            f"💵 Total Payment: `${total_payment:,.2f}`\n\n"
+            f"📄 Full amortization table is attached above."
         )
-        
+
         with open(file_name, 'rb') as doc:
             await update.message.reply_document(
                 document=doc,
                 caption=msg,
                 parse_mode='Markdown'
             )
-            
+
         os.remove(file_name)
         return ConversationHandler.END
-        
+
     except ValueError:
-        await update.message.reply_text("❌ Invalid format. Please enter a whole number for Term in Months (e.g. 54):", reply_markup=get_cancel_keyboard())
+        await update.message.reply_text("❌ Invalid format. Please enter a whole number for Term in Months (e.g. 54):")
         return TERM_MONTHS
 
 async def cancel_calculator(update, context):
@@ -346,7 +410,7 @@ MEDIAN_PRICES = {
 }
 
 async def start_valuation(update, context):
-    if not check_user_authed(update.effective_user.id):
+    if not redis_client.sismember("auth_users", str(update.effective_user.id)):
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
         
@@ -366,7 +430,7 @@ async def select_district(update, context):
     await query.answer()
     context.user_data['val_district'] = query.data
     district_name = query.data.replace('_', ' ').title()
-    await query.edit_message_text(f"✅ Selected: **{district_name}**\n\n📏 Please enter the **Property Size in Sqm** (e.g. 150):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
+    await query.edit_message_text(f"✅ Selected: **{district_name}**\n\n📏 Please enter the **Property Size in Sqm** (e.g. 150):", parse_mode='Markdown')
     return VAL_SIZE
 
 async def get_val_size(update, context):
@@ -389,7 +453,7 @@ async def get_val_size(update, context):
         await update.message.reply_text(msg, parse_mode='Markdown')
         return ConversationHandler.END
     except ValueError:
-        await update.message.reply_text("❌ Invalid format. Please enter a valid number for Sqm (e.g. 150):", reply_markup=get_cancel_keyboard())
+        await update.message.reply_text("❌ Invalid format. Please enter a valid number for Sqm (e.g. 150):")
         return VAL_SIZE
 
 async def cancel_valuation(update, context):
@@ -398,38 +462,38 @@ async def cancel_valuation(update, context):
 
 # --- Loan Pre-approval Scoring Functions ---
 async def start_score(update, context):
-    if not check_user_authed(update.effective_user.id):
+    if not redis_client.sismember("auth_users", str(update.effective_user.id)):
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
     if update.message:
-        await update.message.reply_text("📋 **Loan Pre-approval Scoring**\n\n💵 Please enter the applicant's **Total Monthly Income** in USD (e.g. 3000):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
+        await update.message.reply_text("📋 **Loan Pre-approval Scoring**\n\n💵 Please enter the applicant's **Total Monthly Income** in USD (e.g. 3000):", parse_mode='Markdown')
     return SCORE_INCOME
 
 async def get_score_income(update, context):
     try:
         context.user_data['score_income'] = float(update.message.text.replace(',', '').replace('$', ''))
-        await update.message.reply_text("💳 Enter existing **Total Monthly Debts/Outgoings** in USD (e.g. 500):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
+        await update.message.reply_text("💳 Enter existing **Total Monthly Debts/Outgoings** in USD (e.g. 500):", parse_mode='Markdown')
         return SCORE_DEBT
     except ValueError:
-        await update.message.reply_text("❌ Invalid number. Try again (e.g. 3000):", reply_markup=get_cancel_keyboard())
+        await update.message.reply_text("❌ Invalid number. Try again (e.g. 3000):")
         return SCORE_INCOME
 
 async def get_score_debt(update, context):
     try:
         context.user_data['score_debt'] = float(update.message.text.replace(',', '').replace('$', ''))
-        await update.message.reply_text("🏢 Enter the **Target Property Value** in USD (e.g. 150000):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
+        await update.message.reply_text("🏢 Enter the **Target Property Value** in USD (e.g. 150000):", parse_mode='Markdown')
         return SCORE_PROP_VALUE
     except ValueError:
-        await update.message.reply_text("❌ Invalid number. Try again (e.g. 500):", reply_markup=get_cancel_keyboard())
+        await update.message.reply_text("❌ Invalid number. Try again (e.g. 500):")
         return SCORE_DEBT
 
 async def get_score_prop_value(update, context):
     try:
         context.user_data['score_prop_value'] = float(update.message.text.replace(',', '').replace('$', ''))
-        await update.message.reply_text("💰 Enter the **Requested Loan Amount** in USD (e.g. 100000):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
+        await update.message.reply_text("💰 Enter the **Requested Loan Amount** in USD (e.g. 100000):", parse_mode='Markdown')
         return SCORE_LOAN_AMOUNT
     except ValueError:
-        await update.message.reply_text("❌ Invalid number. Try again (e.g. 150000):", reply_markup=get_cancel_keyboard())
+        await update.message.reply_text("❌ Invalid number. Try again (e.g. 150000):")
         return SCORE_PROP_VALUE
 
 async def get_score_loan_amount(update, context):
@@ -490,7 +554,7 @@ async def get_score_loan_amount(update, context):
         return ConversationHandler.END
         
     except ValueError:
-        await update.message.reply_text("❌ Invalid number. Try again (e.g. 100000):", reply_markup=get_cancel_keyboard())
+        await update.message.reply_text("❌ Invalid number. Try again (e.g. 100000):")
         return SCORE_LOAN_AMOUNT
 
 async def cancel_score(update, context):
@@ -647,29 +711,17 @@ async def admin_cancel(update, context):
         await update.message.reply_text("❌ Admin action cancelled.")
     return ConversationHandler.END
 
-async def post_init(application):
-    from telegram import BotCommand
-    commands = [
-        BotCommand("calculator", "Enterprise EMI Calculator"),
-        BotCommand("score", "Loan Pre-approval Scoring"),
-        BotCommand("valuation", "Property Valuation Tool"),
-        BotCommand("admin", "Admin Panel")
-    ]
-    await application.bot.set_my_commands(commands)
-    print("✅ Bot commands menu registered.")
-
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
     # /myid in group=-1 so it always works from any state
     app.add_handler(CommandHandler("myid", myid), group=-1)
     
     # Common handlers to allow switching between tools from any state
     common_handlers = [
-        CallbackQueryHandler(cancel_flow, pattern="^cancel_flow$"),
-        CommandHandler("calculator", start_calculator),
-        CommandHandler("score", start_score),
-        CommandHandler("valuation", start_valuation),
-        CommandHandler("admin", admin_panel),
+        MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
+        MessageHandler(filters.Regex("^📋 Score$"), start_score),
+        MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
+        MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
     ]
 
     main_conv = ConversationHandler(
@@ -725,14 +777,19 @@ def main():
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
-    print("✅ Starting bot via Polling...")
-    try:
+    if os.getenv("RENDER"):
+        print("✅ Starting bot via Webhook on Render...")
+        PORT = int(os.environ.get('PORT', 8080))
+        RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://loan-bot-qyzu.onrender.com')
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            webhook_url=RENDER_EXTERNAL_URL
+        )
+    else:
+        print("✅ Bot is running locally via Polling...")
         keep_alive()
-        print("✅ Keep-alive barebones server started on port 8080.")
-    except Exception as e:
-        print(f"⚠️ Could not start keep_alive server: {e}")
-
-    app.run_polling()
+        app.run_polling()
 
 if __name__ == "__main__":
     main()
