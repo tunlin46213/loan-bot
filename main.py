@@ -10,7 +10,7 @@ except Exception as e:
 
 from openai import OpenAI
 from upstash_redis import Redis
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -85,14 +85,7 @@ def check_user_authed(user_id):
         return False
 
 
-def get_main_menu(user_id=None):
-    keyboard = [
-        [KeyboardButton("🧮 Calculator"), KeyboardButton("📋 Score")],
-        [KeyboardButton("🏢 Valuation")]
-    ]
-    if user_id and int(user_id) == ADMIN_ID:
-        keyboard.append([KeyboardButton("👑 Admin Panel")])
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 
 async def start(update, context):
     user_id = update.effective_user.id
@@ -101,10 +94,10 @@ async def start(update, context):
     
     if is_authed:
         await update.message.reply_text(
-            "🏦 Cambodia Real Estate Loan Bot\n\n"
-            "Welcome back! Please select an option below:",
-            reply_markup=get_main_menu(update.effective_user.id)
+            "Welcome back! Please select an option from the menu below:",
+            reply_markup=ReplyKeyboardRemove()
         )
+        return ConversationHandler.END
     else:
         await update.message.reply_text(
             "🏦 Cambodia Real Estate Loan Bot\n\n"
@@ -139,7 +132,7 @@ async def handle_message(update, context):
                 })
                 await update.message.reply_text(
                     "✅ Access granted! You can now ask me your real estate loan questions or use the menu below.",
-                    reply_markup=get_main_menu(user_id)
+                    reply_markup=ReplyKeyboardRemove()
                 )
             except Exception as e:
                 print(f"Redis error saving user: {e}")
@@ -673,10 +666,10 @@ def main():
     # Common handlers to allow switching between tools from any state
     common_handlers = [
         CallbackQueryHandler(cancel_flow, pattern="^cancel_flow$"),
-        MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
-        MessageHandler(filters.Regex("^📋 Score$"), start_score),
-        MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-        MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
+        CommandHandler("calculator", start_calculator),
+        CommandHandler("score", start_score),
+        CommandHandler("valuation", start_valuation),
+        CommandHandler("admin", admin_panel),
     ]
 
     main_conv = ConversationHandler(
