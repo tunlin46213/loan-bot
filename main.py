@@ -79,19 +79,20 @@ async def start(update, context):
     
     if is_authed:
         await update.message.reply_text(
-            "🏦 ប្រព័ន្ធគណនាប្រាក់កម្ចីអចលនទ្រព្យ\n\n"
-            "សូមស្វាគមន៍! សូមប្រើប្រាស់ Menu ខាងក្រោម ឬវាយពាក្យបញ្ជា។",
+            "🏦 **BRED Bank Cambodia — Loan Tool**\n\n"
+            "Welcome back! Use the Menu button below to get started.",
             reply_markup=ReplyKeyboardRemove()
         )
     else:
         await update.message.reply_text(
-            "🏦 ប្រព័ន្ធគណនាប្រាក់កម្ចីអចលនទ្រព្យ\n\n"
-            "ប្រព័ន្ធនេះសម្រាប់បុគ្គលិក BRED Bank តែប៉ុណ្ណោះ។\n"
-            "សូមបញ្ចូលលេខសម្ងាត់ដើម្បីចូលប្រើប្រាស់។\n\n"
-            "ពាក្យបញ្ជា:\n"
-            "/calculator - គណនាប្រាក់កម្ចី\n"
-            "/score - វាយតម្លៃការអនុម័តប្រាក់កម្ចី\n"
-            "/valuation - ឧបករណ៍វាយតម្លៃអចលនទ្រព្យ"
+            "🏦 **BRED Bank Cambodia — Loan Tool**\n\n"
+            "This system is for BRED Bank staff only.\n"
+            "Please enter the access password to continue.\n\n"
+            "Available commands:\n"
+            "/calculator — Loan Amortization Calculator\n"
+            "/score      — Loan Pre-approval Scoring\n"
+            "/valuation  — Property Valuation Tool\n"
+            "/myid       — View your Telegram ID"
         )
     return ConversationHandler.END
 
@@ -122,7 +123,7 @@ async def handle_message(update, context):
             except Exception as e:
                 print(f"Redis error saving user: {e}")
             await update.message.reply_text(
-                "✅ អ្នកត្រូវបានអនុញ្ញាត! សូមប្រើប្រាស់ Menu ខាងក្រោម ឬវាយពាក្យបញ្ជា។",
+                "✅ Access granted! Use the Menu button to get started.",
                 reply_markup=ReplyKeyboardRemove()
             )
         else:
@@ -835,11 +836,10 @@ def main():
     async def post_init(application):
         """Auto-register bot commands so they appear in Telegram Menu button."""
         await application.bot.set_my_commands([
-            BotCommand("start",      "ប្រើប្រាស់ | Start"),
-            BotCommand("calculator", "គណនាប្រាក់កម្ចី"),
-            BotCommand("score",      "វាយតម្លៃការអនុម័តប្រាក់កម្ចី"),
-            BotCommand("valuation",  "ឧបករណ៍វាយតម្លៃអចលនទ្រព្យ"),
-            BotCommand("myid",       "មើល Telegram ID របស់"),
+            BotCommand("calculator", "Loan Amortization Calculator"),
+            BotCommand("score",      "Loan Pre-approval Scoring"),
+            BotCommand("valuation",  "Property Valuation Tool"),
+            BotCommand("myid",       "View your Telegram ID"),
         ])
         print("✅ Bot commands registered with Telegram.")
 
