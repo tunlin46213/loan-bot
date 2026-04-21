@@ -6,7 +6,7 @@ from dateutil.relativedelta import relativedelta
 from keep_alive import keep_alive
 from openai import OpenAI
 from upstash_redis import Redis
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -65,13 +65,8 @@ Always reply in the exact same language (e.g. Burmese, English, etc.) as the use
 user_conversations = {}
 
 def get_main_menu(user_id=None):
-    keyboard = [
-        [KeyboardButton("🧮 Calculator"), KeyboardButton("📋 Score")],
-        [KeyboardButton("🏢 Valuation")]
-    ]
-    if user_id and int(user_id) == ADMIN_ID:
-        keyboard.append([KeyboardButton("👑 Admin Panel")])
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    # Use Telegram native Menu button — no custom reply keyboard
+    return ReplyKeyboardRemove()
 
 async def start(update, context):
     try:
@@ -82,19 +77,19 @@ async def start(update, context):
     
     if is_authed:
         await update.message.reply_text(
-            "🏦 Cambodia Real Estate Loan Bot\n\n"
-            "Welcome back! Please select an option below:",
-            reply_markup=get_main_menu(update.effective_user.id)
+            "🏦 ប្រព័ន្ធគណនាប្រាក់កម្ចីអចលនទ្រព្យ\n\n"
+            "សូមស្វាគមន៍! សូមប្រើប្រាស់ Menu ខាងក្រោម ឬវាយពាក្យបញ្ជា។",
+            reply_markup=ReplyKeyboardRemove()
         )
     else:
         await update.message.reply_text(
-            "🏦 Cambodia Real Estate Loan Bot\n\n"
-            "This bot is for BRED Bank staff only.\n"
-            "Please enter the access password to continue.\n\n"
-            "Commands:\n"
-            "/calculator - Enterprise EMI Calculator\n"
-            "/score - Loan Pre-approval Scoring\n"
-            "/valuation - Property Valuation Tool"
+            "🏦 ប្រព័ន្ធគណនាប្រាក់កម្ចីអចលនទ្រព្យ\n\n"
+            "ប្រព័ន្ធនេះសម្រាប់បុគ្គលិក BRED Bank តែប៉ុណ្ណោះ។\n"
+            "សូមបញ្ចូលលេខសម្ងាត់ដើម្បីចូលប្រើប្រាស់។\n\n"
+            "ពាក្យបញ្ជា:\n"
+            "/calculator - គណនាប្រាក់កម្ចី\n"
+            "/score - វាយតម្លៃការអនុម័តប្រាក់កម្ចី\n"
+            "/valuation - ឧបករណ៍វាយតម្លៃអចលនទ្រព្យ"
         )
     return ConversationHandler.END
 
@@ -125,8 +120,8 @@ async def handle_message(update, context):
             except Exception as e:
                 print(f"Redis error saving user: {e}")
             await update.message.reply_text(
-                "✅ Access granted! You can now ask me your real estate loan questions or use the menu below.",
-                reply_markup=get_main_menu(user_id)
+                "✅ អ្នកត្រូវបានអនុញ្ញាត! សូមប្រើប្រាស់ Menu ខាងក្រោម ឬវាយពាក្យបញ្ជា។",
+                reply_markup=ReplyKeyboardRemove()
             )
         else:
             await update.message.reply_text("🔒 This bot is restricted. Please enter the correct password:")
@@ -319,6 +314,14 @@ async def get_term_months(update, context):
 
         first_payment = schedule_rows[0][3] if schedule_rows else '$0.00'
 
+        # --- Khmer method labels ---
+        method_labels_khmer = {
+            'emi':             'ដើម + ការប្រាក់ស្មើគ្នា (EMI)',
+            'equal_principal': 'ដើមស្មើគ្នា',
+            'bullet':          'ការប្រាក់ប្រចាំខែ / ដើមចុងក្រោយ',
+        }
+        method_label_kh = method_labels_khmer.get(method, method_label)
+
         # --- Write professional CSV ---
         file_name = f"Loan_Schedule_{update.effective_user.id}.csv"
         with open(file_name, mode='w', newline='', encoding='utf-8-sig') as file:
@@ -365,17 +368,17 @@ async def get_term_months(update, context):
             ])
 
         msg = (
-            f"📊 **Loan Amortization Schedule**\n"
-            f"Method: {method_label}\n\n"
-            f"💰 Loan Amount: `${amount:,.2f}`\n"
-            f"📈 Annual Rate: `{rate}%`\n"
-            f"⏳ Term: `{months}` months\n"
-            f"📅 Start Date: `{start_date.strftime('%m/%d/%Y')}`\n"
+            f"📊 **លទ្ធផលតារាងបង់ប្រាក់កម្ចី**\n"
+            f"វិធីសាស្ត្រ: {method_label_kh}\n\n"
+            f"💰 ចំនួនប្រាក់កម្ចី: `${amount:,.2f}`\n"
+            f"📈 អត្រាការប្រាក់: `{rate}%`\n"
+            f"⏳ រយៈពេល: `{months}` ខែ\n"
+            f"📅 កាលបរិច្ឆេទចាប់ផ្ដើម: `{start_date.strftime('%m/%d/%Y')}`\n"
             f"─────────────────────────\n"
-            f"💵 Scheduled Payment: `{first_payment}`\n"
-            f"💵 Total Interest: `${total_interest:,.2f}`\n"
-            f"💵 Total Payment: `${total_payment:,.2f}`\n\n"
-            f"📄 Full amortization table is attached above."
+            f"💵 ការបង់ប្រាក់ប្រចាំខែ: `{first_payment}`\n"
+            f"💵 ការប្រាក់សរុប: `${total_interest:,.2f}`\n"
+            f"💵 ការទូទាត់សរុប: `${total_payment:,.2f}`\n\n"
+            f"📄 តារាងបង់ប្រាក់ប្រចាំខែលម្អិតត្រូវបានភ្ជាប់ខាងលើ។"
         )
 
         with open(file_name, 'rb') as doc:
