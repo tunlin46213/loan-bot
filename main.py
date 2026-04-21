@@ -812,6 +812,23 @@ async def admin_revoke_callback(update, context):
     query = update.callback_query
     await query.answer()
     if query.data == 'admin_back':
+        try:
+            user_count = redis_client.scard("auth_users")
+        except Exception:
+            user_count = "?"
+        keyboard = [
+            [InlineKeyboardButton("👥 View All Users", callback_data='admin_view')],
+            [InlineKeyboardButton("❌ Revoke User", callback_data='admin_revoke'),
+             InlineKeyboardButton("➕ Add User", callback_data='admin_add')],
+            [InlineKeyboardButton("📢 Broadcast", callback_data='admin_broadcast')]
+        ]
+        await query.edit_message_text(
+            f"👑 **Admin Panel**\n\n"
+            f"📊 Total Authenticated Users: `{user_count}`\n\n"
+            f"Select an action:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
         return ADMIN_MENU
     target_id = query.data.replace("revoke_", "")
     try:
