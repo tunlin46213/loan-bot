@@ -9,7 +9,7 @@ except Exception as e:
     keep_alive = lambda: None
 
 from openai import OpenAI
-from upstash_redis import Redis
+from upstash_redis.asyncio import Redis
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
@@ -68,9 +68,18 @@ Always reply in the exact same language (e.g. Burmese, English, etc.) as the use
 
 user_conversations = {}
 
-def check_user_authed(user_id):
+def get_cancel_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='cancel_flow')]])
+
+async def cancel_flow(update, context):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("❌ Action cancelled. You can ask me any loan questions.")
+    return ConversationHandler.END
+
+async def check_user_authed(user_id):
     try:
-        return redis_client.sismember("auth_users", str(user_id))
+        return await redis_client.sismember("auth_users", str(user_id))
     except Exception as e:
         print(f"Redis auth check error: {e}")
         return False
@@ -87,7 +96,7 @@ def get_main_menu(user_id=None):
 
 async def start(update, context):
     user_id = update.effective_user.id
-    is_authed = check_user_authed(user_id)
+    is_authed = await check_user_authed(user_id)
 
     
     if is_authed:
@@ -116,16 +125,16 @@ async def handle_message(update, context):
     user_text = update.message.text
 
     # --- Access Control Check ---
-    is_authed = check_user_authed(user_id)
+    is_authed = await check_user_authed(user_id)
 
 
     if not is_authed:
         if user_text.strip() == ACCESS_CODE:
             try:
-                redis_client.sadd("auth_users", str(user_id))
+                await redis_client.sadd("auth_users", str(user_id))
                 # Save user info for admin panel
                 user = update.effective_user
-                redis_client.hset(f"user_info:{user_id}", mapping={
+                await redis_client.hset(f"user_info:{user_id}", mapping={
                     "name": user.full_name or "Unknown",
                     "username": user.username or ""
                 })
@@ -177,7 +186,7 @@ async def handle_message(update, context):
 
 # --- Enterprise Calculator Functions ---
 async def start_calculator(update, context):
-    if not check_user_authed(update.effective_user.id):
+    if not await check_user_authed(update.effective_user.id):
         if update.message:
             await update.message.reply_text("🔒 Please enter the password before using the calculator.")
         return ConversationHandler.END
@@ -206,27 +215,27 @@ async def select_method(update, context):
     elif query.data == 'bullet':
         method_name = "Principal Bullet Repayment"
         
-    await query.edit_message_text(f"✅ Selected: **{method_name}**\n\n💰 Please enter the **Loan Amount** in USD (e.g. 100000):", parse_mode='Markdown')
+    await query.edit_message_text(f"✅ Selected: **{method_name}**\n\n💰 Please enter the **Loan Amount** in USD (e.g. 100000):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
     return AMOUNT
 
 async def get_amount(update, context):
     try:
         text = update.message.text.replace(',', '').replace('$', '')
         context.user_data['amount'] = float(text)
-        await update.message.reply_text("📈 Enter the **Annual Interest Rate** in % (e.g. 8.5):", parse_mode='Markdown')
+        await update.message.reply_text("📈 Enter the **Annual Interest Rate** in % (e.g. 8.5):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
         return RATE
     except ValueError:
-        await update.message.reply_text("❌ Invalid format. Please enter a number for Loan Amount (e.g. 100000):")
+        await update.message.reply_text("❌ Invalid format. Please enter a number for Loan Amount (e.g. 100000):", reply_markup=get_cancel_keyboard())
         return AMOUNT
 
 async def get_rate(update, context):
     try:
         text = update.message.text.replace('%', '')
         context.user_data['rate'] = float(text)
-        await update.message.reply_text("⏳ Enter the **Loan Term in Months** (e.g. 54, 368):", parse_mode='Markdown')
+        await update.message.reply_text("⏳ Enter the **Loan Term in Months** (e.g. 54, 368):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
         return TERM_MONTHS
     except ValueError:
-        await update.message.reply_text("❌ Invalid format. Please enter a number for Interest Rate (e.g. 8.5):")
+        await update.message.reply_text("❌ Invalid format. Please enter a number for Interest Rate (e.g. 8.5):", reply_markup=get_cancel_keyboard())
         return RATE
 
 async def get_term_months(update, context):
@@ -317,7 +326,7 @@ async def get_term_months(update, context):
         return ConversationHandler.END
         
     except ValueError:
-        await update.message.reply_text("❌ Invalid format. Please enter a whole number for Term in Months (e.g. 54):")
+        await update.message.reply_text("❌ Invalid format. Please enter a whole number for Term in Months (e.g. 54):", reply_markup=get_cancel_keyboard())
         return TERM_MONTHS
 
 async def cancel_calculator(update, context):
@@ -338,7 +347,7 @@ MEDIAN_PRICES = {
 }
 
 async def start_valuation(update, context):
-    if not check_user_authed(update.effective_user.id):
+    if not await check_user_authed(update.effective_user.id):
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
         
@@ -358,7 +367,7 @@ async def select_district(update, context):
     await query.answer()
     context.user_data['val_district'] = query.data
     district_name = query.data.replace('_', ' ').title()
-    await query.edit_message_text(f"✅ Selected: **{district_name}**\n\n📏 Please enter the **Property Size in Sqm** (e.g. 150):", parse_mode='Markdown')
+    await query.edit_message_text(f"✅ Selected: **{district_name}**\n\n📏 Please enter the **Property Size in Sqm** (e.g. 150):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
     return VAL_SIZE
 
 async def get_val_size(update, context):
@@ -381,7 +390,7 @@ async def get_val_size(update, context):
         await update.message.reply_text(msg, parse_mode='Markdown')
         return ConversationHandler.END
     except ValueError:
-        await update.message.reply_text("❌ Invalid format. Please enter a valid number for Sqm (e.g. 150):")
+        await update.message.reply_text("❌ Invalid format. Please enter a valid number for Sqm (e.g. 150):", reply_markup=get_cancel_keyboard())
         return VAL_SIZE
 
 async def cancel_valuation(update, context):
@@ -390,38 +399,38 @@ async def cancel_valuation(update, context):
 
 # --- Loan Pre-approval Scoring Functions ---
 async def start_score(update, context):
-    if not check_user_authed(update.effective_user.id):
+    if not await check_user_authed(update.effective_user.id):
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
     if update.message:
-        await update.message.reply_text("📋 **Loan Pre-approval Scoring**\n\n💵 Please enter the applicant's **Total Monthly Income** in USD (e.g. 3000):", parse_mode='Markdown')
+        await update.message.reply_text("📋 **Loan Pre-approval Scoring**\n\n💵 Please enter the applicant's **Total Monthly Income** in USD (e.g. 3000):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
     return SCORE_INCOME
 
 async def get_score_income(update, context):
     try:
         context.user_data['score_income'] = float(update.message.text.replace(',', '').replace('$', ''))
-        await update.message.reply_text("💳 Enter existing **Total Monthly Debts/Outgoings** in USD (e.g. 500):", parse_mode='Markdown')
+        await update.message.reply_text("💳 Enter existing **Total Monthly Debts/Outgoings** in USD (e.g. 500):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
         return SCORE_DEBT
     except ValueError:
-        await update.message.reply_text("❌ Invalid number. Try again (e.g. 3000):")
+        await update.message.reply_text("❌ Invalid number. Try again (e.g. 3000):", reply_markup=get_cancel_keyboard())
         return SCORE_INCOME
 
 async def get_score_debt(update, context):
     try:
         context.user_data['score_debt'] = float(update.message.text.replace(',', '').replace('$', ''))
-        await update.message.reply_text("🏢 Enter the **Target Property Value** in USD (e.g. 150000):", parse_mode='Markdown')
+        await update.message.reply_text("🏢 Enter the **Target Property Value** in USD (e.g. 150000):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
         return SCORE_PROP_VALUE
     except ValueError:
-        await update.message.reply_text("❌ Invalid number. Try again (e.g. 500):")
+        await update.message.reply_text("❌ Invalid number. Try again (e.g. 500):", reply_markup=get_cancel_keyboard())
         return SCORE_DEBT
 
 async def get_score_prop_value(update, context):
     try:
         context.user_data['score_prop_value'] = float(update.message.text.replace(',', '').replace('$', ''))
-        await update.message.reply_text("💰 Enter the **Requested Loan Amount** in USD (e.g. 100000):", parse_mode='Markdown')
+        await update.message.reply_text("💰 Enter the **Requested Loan Amount** in USD (e.g. 100000):", parse_mode='Markdown', reply_markup=get_cancel_keyboard())
         return SCORE_LOAN_AMOUNT
     except ValueError:
-        await update.message.reply_text("❌ Invalid number. Try again (e.g. 150000):")
+        await update.message.reply_text("❌ Invalid number. Try again (e.g. 150000):", reply_markup=get_cancel_keyboard())
         return SCORE_PROP_VALUE
 
 async def get_score_loan_amount(update, context):
@@ -482,7 +491,7 @@ async def get_score_loan_amount(update, context):
         return ConversationHandler.END
         
     except ValueError:
-        await update.message.reply_text("❌ Invalid number. Try again (e.g. 100000):")
+        await update.message.reply_text("❌ Invalid number. Try again (e.g. 100000):", reply_markup=get_cancel_keyboard())
         return SCORE_LOAN_AMOUNT
 
 async def cancel_score(update, context):
@@ -504,7 +513,7 @@ async def admin_panel(update, context):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Access denied. You are not the admin.")
         return ConversationHandler.END
-    user_count = redis_client.scard("auth_users")
+    user_count = await redis_client.scard("auth_users")
     keyboard = [
         [InlineKeyboardButton("👥 View All Users", callback_data='admin_view')],
         [InlineKeyboardButton("❌ Revoke User", callback_data='admin_revoke'),
@@ -524,13 +533,13 @@ async def admin_callback(update, context):
     query = update.callback_query
     await query.answer()
     if query.data == 'admin_view':
-        members = redis_client.smembers("auth_users")
+        members = await redis_client.smembers("auth_users")
         if not members:
             await query.edit_message_text("📭 No authenticated users found.")
             return ConversationHandler.END
         user_list = ""
         for i, uid in enumerate(sorted(members), 1):
-            info = redis_client.hgetall(f"user_info:{uid}")
+            info = await redis_client.hgetall(f"user_info:{uid}")
             name = info.get("name", "Unknown") if info else "Unknown"
             username = info.get("username", "") if info else ""
             username_str = f" (@{username})" if username else ""
@@ -541,13 +550,13 @@ async def admin_callback(update, context):
         )
         return ConversationHandler.END
     elif query.data == 'admin_revoke':
-        members = redis_client.smembers("auth_users")
+        members = await redis_client.smembers("auth_users")
         if not members:
             await query.edit_message_text("📭 No users to revoke.")
             return ConversationHandler.END
         keyboard = []
         for uid in sorted(members):
-            info = redis_client.hgetall(f"user_info:{uid}")
+            info = await redis_client.hgetall(f"user_info:{uid}")
             name = info.get("name", "Unknown") if info else "Unknown"
             username = info.get("username", "") if info else ""
             label = f"❌ {name} (@{username})" if username else f"❌ {name} [{uid}]"
@@ -560,7 +569,7 @@ async def admin_callback(update, context):
         )
         return ADMIN_REVOKE_INPUT
     elif query.data == 'admin_back':
-        user_count = redis_client.scard("auth_users")
+        user_count = await redis_client.scard("auth_users")
         keyboard = [
             [InlineKeyboardButton("👥 View All Users", callback_data='admin_view')],
             [InlineKeyboardButton("❌ Revoke User", callback_data='admin_revoke'),
@@ -595,7 +604,7 @@ async def admin_revoke_callback(update, context):
         return ADMIN_MENU
     target_id = query.data.replace("revoke_", "")
     try:
-        removed = redis_client.srem("auth_users", target_id)
+        removed = await redis_client.srem("auth_users", target_id)
         if removed:
             await query.edit_message_text(f"✅ User `{target_id}` access **revoked** successfully.", parse_mode='Markdown')
         else:
@@ -607,7 +616,7 @@ async def admin_revoke_callback(update, context):
 async def admin_add_user(update, context):
     target_id = update.message.text.strip()
     try:
-        redis_client.sadd("auth_users", target_id)
+        await redis_client.sadd("auth_users", target_id)
         await update.message.reply_text(f"✅ User `{target_id}` **granted access**.", parse_mode='Markdown')
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
@@ -615,7 +624,7 @@ async def admin_add_user(update, context):
 
 async def admin_broadcast(update, context):
     message_text = update.message.text
-    members = redis_client.smembers("auth_users")
+    members = await redis_client.smembers("auth_users")
     success = 0
     fail = 0
     await update.message.reply_text(f"📤 Sending to {len(members)} users...")
@@ -639,13 +648,25 @@ async def admin_cancel(update, context):
         await update.message.reply_text("❌ Admin action cancelled.")
     return ConversationHandler.END
 
+async def post_init(application):
+    from telegram import BotCommand
+    commands = [
+        BotCommand("calculator", "Enterprise EMI Calculator"),
+        BotCommand("score", "Loan Pre-approval Scoring"),
+        BotCommand("valuation", "Property Valuation Tool"),
+        BotCommand("admin", "Admin Panel")
+    ]
+    await application.bot.set_my_commands(commands)
+    print("✅ Bot commands menu registered.")
+
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     # /myid in group=-1 so it always works from any state
     app.add_handler(CommandHandler("myid", myid), group=-1)
     
     # Common handlers to allow switching between tools from any state
     common_handlers = [
+        CallbackQueryHandler(cancel_flow, pattern="^cancel_flow$"),
         MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
         MessageHandler(filters.Regex("^📋 Score$"), start_score),
         MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
