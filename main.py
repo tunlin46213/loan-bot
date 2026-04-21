@@ -65,6 +65,7 @@ Always reply in the exact same language (e.g. Burmese, English, etc.) as the use
 """
 
 user_conversations = {}
+_auth_cache: set = set()   # in-memory session fallback when Redis is unavailable
 
 def get_main_menu(user_id=None):
     # Use Telegram native Menu button — no custom reply keyboard
@@ -107,27 +108,39 @@ async def handle_message(update, context):
 
     # --- Access Control Check ---
     try:
-        is_authed = redis_client.sismember("auth_users", str(user_id))
+        is_authed = bool(redis_client.sismember("auth_users", str(user_id)))
     except Exception as e:
         print(f"Redis error in handle_message: {e}")
-        is_authed = False
+        is_authed = str(user_id) in _auth_cache
 
     if not is_authed:
         if user_text.strip() == ACCESS_CODE:
+            saved = False
             try:
                 redis_client.sadd("auth_users", str(user_id))
-                # Save user info for admin panel
                 user = update.effective_user
                 redis_client.hset(f"user_info:{user_id}", mapping={
                     "name": user.full_name or "Unknown",
                     "username": user.username or ""
                 })
+                saved = True
             except Exception as e:
                 print(f"Redis error saving user: {e}")
-            await update.message.reply_text(
-                "✅ Access granted! Use the Menu button to get started.",
-                reply_markup=ReplyKeyboardRemove()
-            )
+            
+            _auth_cache.add(str(user_id))   # always cache in memory
+            
+            if saved:
+                await update.message.reply_text(
+                    "✅ Access granted! Use the Menu button to get started.",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+            else:
+                await update.message.reply_text(
+                    "✅ Access granted! *(Session only — Redis unavailable)*\n"
+                    "Use the Menu button to get started.",
+                    reply_markup=ReplyKeyboardRemove(),
+                    parse_mode='Markdown'
+                )
         else:
             await update.message.reply_text("🔒 This bot is restricted. Please enter the correct password:")
         return
@@ -171,9 +184,9 @@ async def handle_message(update, context):
 # --- Enterprise Calculator Functions ---
 async def start_calculator(update, context):
     try:
-        is_authed = redis_client.sismember("auth_users", str(update.effective_user.id))
+        is_authed = bool(redis_client.sismember("auth_users", str(update.effective_user.id)))
     except Exception:
-        is_authed = False
+        is_authed = str(update.effective_user.id) in _auth_cache
     if not is_authed:
         if update.message:
             await update.message.reply_text("🔒 Please enter the password before using the calculator.")
@@ -538,9 +551,9 @@ MEDIAN_PRICES = {
 
 async def start_valuation(update, context):
     try:
-        is_authed = redis_client.sismember("auth_users", str(update.effective_user.id))
+        is_authed = bool(redis_client.sismember("auth_users", str(update.effective_user.id)))
     except Exception:
-        is_authed = False
+        is_authed = str(update.effective_user.id) in _auth_cache
     if not is_authed:
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
@@ -594,9 +607,9 @@ async def cancel_valuation(update, context):
 # --- Loan Pre-approval Scoring Functions ---
 async def start_score(update, context):
     try:
-        is_authed = redis_client.sismember("auth_users", str(update.effective_user.id))
+        is_authed = bool(redis_client.sismember("auth_users", str(update.effective_user.id)))
     except Exception:
-        is_authed = False
+        is_authed = str(update.effective_user.id) in _auth_cache
     if not is_authed:
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
