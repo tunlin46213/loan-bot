@@ -8,7 +8,7 @@ from openpyxl.utils import get_column_letter
 from keep_alive import keep_alive
 from openai import OpenAI
 from upstash_redis import Redis
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardRemove
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardRemove, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -299,14 +299,14 @@ async def get_term_months(update, context):
             schedule_rows.append([
                 i,
                 payment_date,
-                f"${beginning_balance:,.2f}",
-                f"${sched_pay:,.2f}",
-                f"${extra_payment:,.2f}",
-                f"${total_pay:,.2f}",
-                f"${principal:,.2f}",
-                f"${interest:,.2f}",
-                f"${ending_balance:,.2f}",
-                f"${cumulative_interest:,.2f}",
+                round(beginning_balance, 2),
+                round(sched_pay, 2),
+                round(extra_payment, 2),
+                round(total_pay, 2),
+                round(principal, 2),
+                round(interest, 2),
+                round(ending_balance, 2),
+                round(cumulative_interest, 2),
             ])
 
             balance = ending_balance
@@ -314,7 +314,8 @@ async def get_term_months(update, context):
             total_interest += interest
             total_principal += principal
 
-        first_payment = schedule_rows[0][3] if schedule_rows else '$0.00'
+        first_payment_num = schedule_rows[0][3] if schedule_rows else 0.0
+        first_payment = f"${first_payment_num:,.2f}"
 
         # --- Khmer method labels ---
         method_labels_khmer = {
@@ -363,17 +364,19 @@ async def get_term_months(update, context):
         wb = Workbook()
         ws = wb.active
         ws.title = "Loan Amortization"
+        ws.sheet_properties.tabColor = "1F3864"   # BRED Bank blue tab
 
         col_widths = [6, 14, 18, 18, 14, 16, 14, 12, 16, 19]
         for i, w in enumerate(col_widths, 1):
             ws.column_dimensions[get_column_letter(i)].width = w
 
-        def put(r, c, v="", font=f_label, fill=None, align=a_l, border=None):
+        def put(r, c, v="", font=f_label, fill=None, align=a_l, border=None, num_fmt=None):
             cl = ws.cell(row=r, column=c, value=v)
             cl.font = font
-            if fill:   cl.fill   = fill
+            if fill:    cl.fill   = fill
             cl.alignment = align
-            if border: cl.border = border
+            if border:  cl.border = border
+            if num_fmt: cl.number_format = num_fmt
             return cl
 
         def merge(r, c1, c2):
@@ -435,32 +438,47 @@ async def get_term_months(update, context):
         ]
         for c, h in enumerate(col_headers, 1):
             put(row, c, h, font=f_hdr, fill=fl_hdr, align=a_c, border=_hdr_border())
+        table_hdr_row = row   # save for print_title_rows
         row += 1
 
         # Freeze panes below header + lender info
         ws.freeze_panes = ws.cell(row=row, column=1)
 
         # ══ SECTION 3 – Data Rows ═════════════════════════════
+        MONEY_FMT = '$#,##0.00'
         for i, sr in enumerate(schedule_rows):
             fill = fl_even if i % 2 == 0 else None
             ws.row_dimensions[row].height = 15
             for c, val in enumerate(sr, 1):
-                al = a_c if c <= 2 else a_r
-                put(row, c, val, font=f_data, fill=fill, align=al, border=_thin())
+                al  = a_c if c <= 2 else a_r
+                nf  = MONEY_FMT if c >= 3 else None
+                put(row, c, val, font=f_data, fill=fill, align=al, border=_thin(), num_fmt=nf)
             row += 1
 
         # ══ SECTION 4 – Totals Row ════════════════════════════
         ws.row_dimensions[row].height = 18
         merge(row, 1, 5); put(row, 1, "TOTAL", font=f_total, fill=fl_total, align=a_c, border=_thin())
         totals_vals = [
-            (6,  f"${total_payment:,.2f}"),
-            (7,  f"${total_principal:,.2f}"),
-            (8,  f"${total_interest:,.2f}"),
-            (9,  ""),
-            (10, ""),
+            (6,  total_payment,   MONEY_FMT),
+            (7,  total_principal, MONEY_FMT),
+            (8,  total_interest,  MONEY_FMT),
+            (9,  "",              None),
+            (10, "",              None),
         ]
-        for c, v in totals_vals:
-            put(row, c, v, font=f_total, fill=fl_total, align=a_r, border=_thin())
+        for c, v, nf in totals_vals:
+            put(row, c, v, font=f_total, fill=fl_total, align=a_r, border=_thin(), num_fmt=nf)
+
+        # ── Print Settings ────────────────────────────────────
+        from openpyxl.worksheet.page import PageMargins
+        ws.page_setup.orientation        = 'landscape'
+        ws.page_setup.fitToPage          = True
+        ws.page_setup.fitToWidth         = 1
+        ws.page_setup.fitToHeight        = 0
+        ws.page_setup.paperSize          = ws.PAPERSIZE_A4
+        ws.page_margins                  = PageMargins(left=0.5, right=0.5, top=0.6, bottom=0.6)
+        ws.print_title_rows              = f'1:{table_hdr_row}'   # repeat header on each page
+        ws.print_area                    = f'A1:J{row}'
+        ws.sheet_view.showGridLines      = True
 
         # ── Save ──────────────────────────────────────────────
         file_name = f"Loan_Schedule_{update.effective_user.id}.xlsx"
@@ -814,7 +832,18 @@ async def admin_cancel(update, context):
     return ConversationHandler.END
 
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    async def post_init(application):
+        """Auto-register bot commands so they appear in Telegram Menu button."""
+        await application.bot.set_my_commands([
+            BotCommand("start",      "ប្រើប្រាស់ | Start"),
+            BotCommand("calculator", "គណនាប្រាក់កម្ចី"),
+            BotCommand("score",      "វាយតម្លៃការអនុម័តប្រាក់កម្ចី"),
+            BotCommand("valuation",  "ឧបករណ៍វាយតម្លៃអចលនទ្រព្យ"),
+            BotCommand("myid",       "មើល Telegram ID របស់"),
+        ])
+        print("✅ Bot commands registered with Telegram.")
+
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     # /myid in group=-1 so it always works from any state
     app.add_handler(CommandHandler("myid", myid), group=-1)
     
