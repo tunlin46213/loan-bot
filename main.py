@@ -132,18 +132,18 @@ async def handle_message(update, context):
         if user_text.strip() == ACCESS_CODE:
             try:
                 redis_client.sadd("auth_users", str(user_id))
-                # Save user info for admin panel
                 user = update.effective_user
                 redis_client.hset(f"user_info:{user_id}", mapping={
                     "name": user.full_name or "Unknown",
                     "username": user.username or ""
                 })
+                await update.message.reply_text(
+                    "✅ Access granted! You can now ask me your real estate loan questions or use the menu below.",
+                    reply_markup=get_main_menu(user_id)
+                )
             except Exception as e:
                 print(f"Redis error saving user: {e}")
-            await update.message.reply_text(
-                "✅ Access granted! You can now ask me your real estate loan questions or use the menu below.",
-                reply_markup=get_main_menu(user_id)
-            )
+                await update.message.reply_text("❌ Database Error: Could not save your login. Ensure UPSTASH_REDIS Environment Variables are set on Render.")
         else:
             await update.message.reply_text("🔒 This bot is restricted. Please enter the correct password:")
         return
@@ -162,15 +162,21 @@ async def handle_message(update, context):
         action="typing"
     )
 
-    response = qwen_client.chat.completions.create(
-        model="qwen/qwen-plus",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            *user_conversations[user_id]
-        ]
-    )
 
-    bot_reply = response.choices[0].message.content
+    try:
+        response = qwen_client.chat.completions.create(
+            model="qwen/qwen-plus",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                *user_conversations[user_id]
+            ]
+        )
+
+        bot_reply = response.choices[0].message.content
+    except Exception as e:
+        print(f"OpenAI/Qwen API Error: {e}")
+        await update.message.reply_text("⚠️ AI Service Error: Please make sure your DASHSCOPE_API_KEY Environment Variable is set correctly on Render.")
+        return
 
     user_conversations[user_id].append({
         "role": "assistant",
