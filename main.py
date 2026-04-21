@@ -9,7 +9,7 @@ except Exception as e:
     keep_alive = lambda: None
 
 from openai import OpenAI
-from upstash_redis.asyncio import Redis
+from upstash_redis import Redis
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
@@ -77,9 +77,9 @@ async def cancel_flow(update, context):
     await query.edit_message_text("❌ Action cancelled. You can ask me any loan questions.")
     return ConversationHandler.END
 
-async def check_user_authed(user_id):
+def check_user_authed(user_id):
     try:
-        return await redis_client.sismember("auth_users", str(user_id))
+        return redis_client.sismember("auth_users", str(user_id))
     except Exception as e:
         print(f"Redis auth check error: {e}")
         return False
@@ -96,7 +96,7 @@ def get_main_menu(user_id=None):
 
 async def start(update, context):
     user_id = update.effective_user.id
-    is_authed = await check_user_authed(user_id)
+    is_authed = check_user_authed(user_id)
 
     
     if is_authed:
@@ -125,16 +125,16 @@ async def handle_message(update, context):
     user_text = update.message.text
 
     # --- Access Control Check ---
-    is_authed = await check_user_authed(user_id)
+    is_authed = check_user_authed(user_id)
 
 
     if not is_authed:
         if user_text.strip() == ACCESS_CODE:
             try:
-                await redis_client.sadd("auth_users", str(user_id))
+                redis_client.sadd("auth_users", str(user_id))
                 # Save user info for admin panel
                 user = update.effective_user
-                await redis_client.hset(f"user_info:{user_id}", mapping={
+                redis_client.hset(f"user_info:{user_id}", mapping={
                     "name": user.full_name or "Unknown",
                     "username": user.username or ""
                 })
@@ -186,7 +186,7 @@ async def handle_message(update, context):
 
 # --- Enterprise Calculator Functions ---
 async def start_calculator(update, context):
-    if not await check_user_authed(update.effective_user.id):
+    if not check_user_authed(update.effective_user.id):
         if update.message:
             await update.message.reply_text("🔒 Please enter the password before using the calculator.")
         return ConversationHandler.END
@@ -347,7 +347,7 @@ MEDIAN_PRICES = {
 }
 
 async def start_valuation(update, context):
-    if not await check_user_authed(update.effective_user.id):
+    if not check_user_authed(update.effective_user.id):
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
         
@@ -399,7 +399,7 @@ async def cancel_valuation(update, context):
 
 # --- Loan Pre-approval Scoring Functions ---
 async def start_score(update, context):
-    if not await check_user_authed(update.effective_user.id):
+    if not check_user_authed(update.effective_user.id):
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
     if update.message:
@@ -513,7 +513,7 @@ async def admin_panel(update, context):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Access denied. You are not the admin.")
         return ConversationHandler.END
-    user_count = await redis_client.scard("auth_users")
+    user_count = redis_client.scard("auth_users")
     keyboard = [
         [InlineKeyboardButton("👥 View All Users", callback_data='admin_view')],
         [InlineKeyboardButton("❌ Revoke User", callback_data='admin_revoke'),
@@ -533,13 +533,13 @@ async def admin_callback(update, context):
     query = update.callback_query
     await query.answer()
     if query.data == 'admin_view':
-        members = await redis_client.smembers("auth_users")
+        members = redis_client.smembers("auth_users")
         if not members:
             await query.edit_message_text("📭 No authenticated users found.")
             return ConversationHandler.END
         user_list = ""
         for i, uid in enumerate(sorted(members), 1):
-            info = await redis_client.hgetall(f"user_info:{uid}")
+            info = redis_client.hgetall(f"user_info:{uid}")
             name = info.get("name", "Unknown") if info else "Unknown"
             username = info.get("username", "") if info else ""
             username_str = f" (@{username})" if username else ""
@@ -550,13 +550,13 @@ async def admin_callback(update, context):
         )
         return ConversationHandler.END
     elif query.data == 'admin_revoke':
-        members = await redis_client.smembers("auth_users")
+        members = redis_client.smembers("auth_users")
         if not members:
             await query.edit_message_text("📭 No users to revoke.")
             return ConversationHandler.END
         keyboard = []
         for uid in sorted(members):
-            info = await redis_client.hgetall(f"user_info:{uid}")
+            info = redis_client.hgetall(f"user_info:{uid}")
             name = info.get("name", "Unknown") if info else "Unknown"
             username = info.get("username", "") if info else ""
             label = f"❌ {name} (@{username})" if username else f"❌ {name} [{uid}]"
@@ -569,7 +569,7 @@ async def admin_callback(update, context):
         )
         return ADMIN_REVOKE_INPUT
     elif query.data == 'admin_back':
-        user_count = await redis_client.scard("auth_users")
+        user_count = redis_client.scard("auth_users")
         keyboard = [
             [InlineKeyboardButton("👥 View All Users", callback_data='admin_view')],
             [InlineKeyboardButton("❌ Revoke User", callback_data='admin_revoke'),
@@ -604,7 +604,7 @@ async def admin_revoke_callback(update, context):
         return ADMIN_MENU
     target_id = query.data.replace("revoke_", "")
     try:
-        removed = await redis_client.srem("auth_users", target_id)
+        removed = redis_client.srem("auth_users", target_id)
         if removed:
             await query.edit_message_text(f"✅ User `{target_id}` access **revoked** successfully.", parse_mode='Markdown')
         else:
@@ -616,7 +616,7 @@ async def admin_revoke_callback(update, context):
 async def admin_add_user(update, context):
     target_id = update.message.text.strip()
     try:
-        await redis_client.sadd("auth_users", target_id)
+        redis_client.sadd("auth_users", target_id)
         await update.message.reply_text(f"✅ User `{target_id}` **granted access**.", parse_mode='Markdown')
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
@@ -624,7 +624,7 @@ async def admin_add_user(update, context):
 
 async def admin_broadcast(update, context):
     message_text = update.message.text
-    members = await redis_client.smembers("auth_users")
+    members = redis_client.smembers("auth_users")
     success = 0
     fail = 0
     await update.message.reply_text(f"📤 Sending to {len(members)} users...")
