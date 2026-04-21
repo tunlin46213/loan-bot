@@ -8,7 +8,7 @@ from openpyxl.utils import get_column_letter
 from keep_alive import keep_alive
 from openai import OpenAI
 from upstash_redis import Redis
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardRemove, BotCommand
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardRemove, BotCommand, BotCommandScopeChat
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -81,7 +81,8 @@ async def start(update, context):
         await update.message.reply_text(
             "🏦 **BRED Bank Cambodia — Loan Tool**\n\n"
             "Welcome back! Use the Menu button below to get started.",
-            reply_markup=ReplyKeyboardRemove()
+            reply_markup=ReplyKeyboardRemove(),
+            parse_mode='Markdown'
         )
     else:
         await update.message.reply_text(
@@ -89,10 +90,11 @@ async def start(update, context):
             "This system is for BRED Bank staff only.\n"
             "Please enter the access password to continue.\n\n"
             "Available commands:\n"
-            "/calculator — Loan Amortization Calculator\n"
-            "/score      — Loan Pre-approval Scoring\n"
-            "/valuation  — Property Valuation Tool\n"
-            "/myid       — View your Telegram ID"
+            "`/calculator` — Loan Amortization Calculator\n"
+            "`/score`      — Loan Pre-approval Scoring\n"
+            "`/valuation`  — Property Valuation Tool\n"
+            "`/myid`       — View your Telegram ID",
+            parse_mode='Markdown'
         )
     return ConversationHandler.END
 
@@ -168,7 +170,11 @@ async def handle_message(update, context):
 
 # --- Enterprise Calculator Functions ---
 async def start_calculator(update, context):
-    if not redis_client.sismember("auth_users", str(update.effective_user.id)):
+    try:
+        is_authed = redis_client.sismember("auth_users", str(update.effective_user.id))
+    except Exception:
+        is_authed = False
+    if not is_authed:
         if update.message:
             await update.message.reply_text("🔒 Please enter the password before using the calculator.")
         return ConversationHandler.END
@@ -531,7 +537,11 @@ MEDIAN_PRICES = {
 }
 
 async def start_valuation(update, context):
-    if not redis_client.sismember("auth_users", str(update.effective_user.id)):
+    try:
+        is_authed = redis_client.sismember("auth_users", str(update.effective_user.id))
+    except Exception:
+        is_authed = False
+    if not is_authed:
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
         
@@ -583,7 +593,11 @@ async def cancel_valuation(update, context):
 
 # --- Loan Pre-approval Scoring Functions ---
 async def start_score(update, context):
-    if not redis_client.sismember("auth_users", str(update.effective_user.id)):
+    try:
+        is_authed = redis_client.sismember("auth_users", str(update.effective_user.id))
+    except Exception:
+        is_authed = False
+    if not is_authed:
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
     if update.message:
@@ -835,12 +849,22 @@ async def admin_cancel(update, context):
 def main():
     async def post_init(application):
         """Auto-register bot commands so they appear in Telegram Menu button."""
+        # Regular user commands
         await application.bot.set_my_commands([
             BotCommand("calculator", "Loan Amortization Calculator"),
             BotCommand("score",      "Loan Pre-approval Scoring"),
             BotCommand("valuation",  "Property Valuation Tool"),
             BotCommand("myid",       "View your Telegram ID"),
         ])
+        # Admin-only commands (shown only in Admin's chat)
+        if ADMIN_ID:
+            await application.bot.set_my_commands([
+                BotCommand("calculator", "Loan Amortization Calculator"),
+                BotCommand("score",      "Loan Pre-approval Scoring"),
+                BotCommand("valuation",  "Property Valuation Tool"),
+                BotCommand("admin",      "👑 Admin Panel"),
+                BotCommand("myid",       "View your Telegram ID"),
+            ], scope=BotCommandScopeChat(chat_id=ADMIN_ID))
         print("✅ Bot commands registered with Telegram.")
 
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
