@@ -410,12 +410,15 @@ async def get_term_months(update, context):
         merge(row, 6,10); put(row, 6, "LOAN SUMMARY",  font=f_title)
         row += 1
 
+        years = months / 12
+        years_str = f"{years:g}"
+        
         # Enter Values rows (left) + Loan Summary rows (right)
         e_rows = [
             ("Loan amount",               f"${amount:,.2f}"),
             ("Annual interest rate",      f"{rate:.2f}%"),
             ("Loan period in months",     str(months)),
-            ("Number of payments / year", "12"),
+            ("Loan period in years",      years_str),
             ("Start date of loan",        start_date.strftime("%m/%d/%Y")),
         ]
         s_rows = [
