@@ -1,14 +1,19 @@
 from dotenv import load_dotenv
 import os
-from datetime import datetime, date
+import io
+import json
+import math
+from datetime import date
 from dateutil.relativedelta import relativedelta
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from keep_alive import keep_alive
-from openai import OpenAI
+import asyncio
+from openai import AsyncOpenAI
 from upstash_redis import Redis
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardRemove, BotCommand, BotCommandScopeChat
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, BotCommand, BotCommandScopeChat
+from telegram.helpers import escape_markdown
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -16,7 +21,6 @@ from telegram.ext import (
     filters,
     ConversationHandler,
     CallbackQueryHandler,
-    ContextTypes
 )
 
 (
@@ -41,7 +45,7 @@ redis_client = Redis(
 )
 
 # Qwen Client
-qwen_client = OpenAI(
+qwen_client = AsyncOpenAI(
     api_key=DASHSCOPE_API_KEY,
     base_url="https://openrouter.ai/api/v1"
 )
@@ -65,18 +69,88 @@ Always reply in the exact same language (e.g. Burmese, English, etc.) as the use
 """
 
 user_conversations = {}
-_auth_cache: set = set()   # in-memory session fallback when Redis is unavailable
+_auth_cache: set = set()   # in-memory cache of authenticated user IDs
 
-def get_main_menu(user_id=None):
-    # Use Telegram native Menu button — no custom reply keyboard
-    return ReplyKeyboardRemove()
+async def check_auth(user_id) -> bool:
+    """Fast auth check: memory cache first, then Redis (off the event loop)."""
+    uid = str(user_id)
+    if uid in _auth_cache:
+        return True
+    try:
+        ok = bool(await asyncio.to_thread(redis_client.sismember, "auth_users", uid))
+    except Exception as e:
+        print(f"Redis error in check_auth: {e}")
+        return False
+    if ok:
+        _auth_cache.add(uid)
+    return ok
+
+async def redis_call(fn, *args, **kwargs):
+    """Run a (blocking) Upstash Redis call without freezing the bot."""
+    return await asyncio.to_thread(fn, *args, **kwargs)
+
+def md(text) -> str:
+    """Escape user-supplied text for parse_mode='Markdown'."""
+    return escape_markdown(str(text), version=1)
+
+TG_MAX_LEN = 4000   # Telegram limit is 4096 characters per message
+
+def split_text(text: str, limit: int = TG_MAX_LEN):
+    """Split long text into Telegram-sized chunks, preferring line breaks."""
+    chunks = []
+    while len(text) > limit:
+        cut = text.rfind("\n", 0, limit)
+        if cut < limit // 2:
+            cut = limit
+        chunks.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    if text:
+        chunks.append(text)
+    return chunks
+
+def parse_number(text, *, minimum=None, maximum=None, integer=False, allow_min=True):
+    """Parse user input like '100,000', '$5000', '8.5%', '150 sqm'. Returns None if invalid."""
+    cleaned = (text or "").lower().replace(",", "").replace("$", "").replace("%", "").replace("sqm", "").strip()
+    try:
+        value = int(cleaned) if integer else float(cleaned)
+    except ValueError:
+        return None
+    if not math.isfinite(value):
+        return None
+    if minimum is not None and (value < minimum or (value == minimum and not allow_min)):
+        return None
+    if maximum is not None and value > maximum:
+        return None
+    return value
+
+# --- AI chat history (kept in Redis so it survives restarts) ---
+HISTORY_TTL = 7 * 24 * 3600   # forget after 7 days of inactivity
+HISTORY_MAX = 10
+
+async def load_history(user_id):
+    if user_id in user_conversations:
+        return user_conversations[user_id]
+    history = []
+    try:
+        raw = await redis_call(redis_client.get, f"chat_history:{user_id}")
+        if raw:
+            history = json.loads(raw)
+    except Exception as e:
+        print(f"Redis error loading history: {e}")
+    user_conversations[user_id] = history
+    return history
+
+async def save_history(user_id, history):
+    history = history[-HISTORY_MAX:]
+    user_conversations[user_id] = history
+    try:
+        await redis_call(redis_client.set, f"chat_history:{user_id}",
+                         json.dumps(history, ensure_ascii=False), ex=HISTORY_TTL)
+    except Exception as e:
+        print(f"Redis error saving history: {e}")
 
 async def start(update, context):
-    try:
-        user_id = update.effective_user.id
-        is_authed = redis_client.sismember("auth_users", str(user_id))
-    except Exception:
-        is_authed = False
+    is_authed = await check_auth(update.effective_user.id)
     
     if is_authed:
         await update.message.reply_text(
@@ -107,19 +181,15 @@ async def handle_message(update, context):
     user_text = update.message.text
 
     # --- Access Control Check ---
-    try:
-        is_authed = bool(redis_client.sismember("auth_users", str(user_id)))
-    except Exception as e:
-        print(f"Redis error in handle_message: {e}")
-        is_authed = str(user_id) in _auth_cache
+    is_authed = await check_auth(user_id)
 
     if not is_authed:
         if user_text.strip() == ACCESS_CODE:
             saved = False
             try:
-                redis_client.sadd("auth_users", str(user_id))
+                await redis_call(redis_client.sadd, "auth_users", str(user_id))
                 user = update.effective_user
-                redis_client.hset(f"user_info:{user_id}", mapping={
+                await redis_call(redis_client.hset, f"user_info:{user_id}", mapping={
                     "name": user.full_name or "Unknown",
                     "username": user.username or ""
                 })
@@ -146,47 +216,38 @@ async def handle_message(update, context):
         return
     # ----------------------------
 
-    if user_id not in user_conversations:
-        user_conversations[user_id] = []
-
-    user_conversations[user_id].append({
-        "role": "user",
-        "content": user_text
-    })
+    history = list(await load_history(user_id))
+    history.append({"role": "user", "content": user_text})
 
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id,
         action="typing"
     )
 
-    response = qwen_client.chat.completions.create(
-        model="qwen/qwen-plus",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            *user_conversations[user_id]
-        ]
-    )
+    try:
+        response = await qwen_client.chat.completions.create(
+            model="qwen/qwen-plus",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                *history
+            ],
+            timeout=60,
+        )
+        bot_reply = response.choices[0].message.content or "…"
+    except Exception as e:
+        print(f"Qwen API error: {e}")
+        await update.message.reply_text("⚠️ AI assistant is busy right now. Please try again in a moment.")
+        return
 
-    bot_reply = response.choices[0].message.content
+    history.append({"role": "assistant", "content": bot_reply})
+    await save_history(user_id, history)   # keeps last 10 messages
 
-    user_conversations[user_id].append({
-        "role": "assistant",
-        "content": bot_reply
-    })
-
-    # Keep last 10 messages only
-    if len(user_conversations[user_id]) > 10:
-        user_conversations[user_id] = \
-            user_conversations[user_id][-10:]
-
-    await update.message.reply_text(bot_reply)
+    for chunk in split_text(bot_reply):
+        await update.message.reply_text(chunk)
 
 # --- Enterprise Calculator Functions ---
 async def start_calculator(update, context):
-    try:
-        is_authed = bool(redis_client.sismember("auth_users", str(update.effective_user.id)))
-    except Exception:
-        is_authed = str(update.effective_user.id) in _auth_cache
+    is_authed = await check_auth(update.effective_user.id)
     if not is_authed:
         if update.message:
             await update.message.reply_text("🔒 Please enter the password before using the calculator.")
@@ -206,6 +267,9 @@ async def start_calculator(update, context):
 async def select_method(update, context):
     query = update.callback_query
     await query.answer()
+    if not await check_auth(update.effective_user.id):
+        await query.edit_message_text("🔒 Please enter the password first.")
+        return ConversationHandler.END
     context.user_data['method'] = query.data
     
     method_name = ""
@@ -220,28 +284,31 @@ async def select_method(update, context):
     return AMOUNT
 
 async def get_amount(update, context):
-    try:
-        text = update.message.text.replace(',', '').replace('$', '')
-        context.user_data['amount'] = float(text)
-        await update.message.reply_text("📈 Enter the **Annual Interest Rate** in % (e.g. 8.5):", parse_mode='Markdown')
-        return RATE
-    except ValueError:
-        await update.message.reply_text("❌ Invalid format. Please enter a number for Loan Amount (e.g. 100000):")
+    amount = parse_number(update.message.text, minimum=0, allow_min=False, maximum=1_000_000_000)
+    if amount is None:
+        await update.message.reply_text("❌ Please enter a Loan Amount greater than 0 (e.g. 100000):")
         return AMOUNT
+    context.user_data['amount'] = amount
+    await update.message.reply_text("📈 Enter the **Annual Interest Rate** in % (e.g. 8.5):", parse_mode='Markdown')
+    return RATE
 
 async def get_rate(update, context):
-    try:
-        text = update.message.text.replace('%', '')
-        context.user_data['rate'] = float(text)
-        await update.message.reply_text("⏳ Enter the **Loan Term in Months** (e.g. 54, 368):", parse_mode='Markdown')
-        return TERM_MONTHS
-    except ValueError:
-        await update.message.reply_text("❌ Invalid format. Please enter a number for Interest Rate (e.g. 8.5):")
+    rate = parse_number(update.message.text, minimum=0, maximum=100)
+    if rate is None:
+        await update.message.reply_text("❌ Please enter an Interest Rate between 0 and 100 (e.g. 8.5):")
         return RATE
+    context.user_data['rate'] = rate
+    await update.message.reply_text(f"⏳ Enter the **Loan Term in Months** (1–{MAX_MONTHS}, e.g. 240):", parse_mode='Markdown')
+    return TERM_MONTHS
+
+MAX_MONTHS = 600   # 50 years — keeps the Excel file a sensible size
 
 async def get_term_months(update, context):
+    months = parse_number(update.message.text, integer=True, minimum=1, maximum=MAX_MONTHS)
+    if months is None:
+        await update.message.reply_text(f"❌ Please enter a whole number of months between 1 and {MAX_MONTHS} (e.g. 240):")
+        return TERM_MONTHS
     try:
-        months = int(update.message.text)
         amount = context.user_data['amount']
         rate = context.user_data['rate']
         method = context.user_data['method']
@@ -503,9 +570,11 @@ async def get_term_months(update, context):
         ws.print_area                    = f'A1:J{row}'
         ws.sheet_view.showGridLines      = True
 
-        # ── Save ──────────────────────────────────────────────
+        # ── Save (in memory — no temp file left on disk) ──────
         file_name = f"Loan_Schedule_{update.effective_user.id}.xlsx"
-        wb.save(file_name)
+        buffer = io.BytesIO()
+        await asyncio.to_thread(wb.save, buffer)
+        buffer.seek(0)
 
         msg = (
             f"📊 **លទ្ធផលតារាងបង់ប្រាក់កម្ចី**\n"
@@ -521,24 +590,18 @@ async def get_term_months(update, context):
             f"📄 តារាងបង់ប្រាក់ប្រចាំខែលម្អិតត្រូវបានភ្ជាប់ខាងលើ។"
         )
 
-        with open(file_name, 'rb') as doc:
-            await update.message.reply_document(
-                document=doc,
-                caption=msg,
-                parse_mode='Markdown'
-            )
-
-        os.remove(file_name)
+        await update.message.reply_document(
+            document=buffer,
+            filename=file_name,
+            caption=msg,
+            parse_mode='Markdown'
+        )
         return ConversationHandler.END
 
-    except ValueError:
-        await update.message.reply_text("❌ Invalid format. Please enter a whole number for Term in Months (e.g. 54):")
-        return TERM_MONTHS
-
-async def cancel_calculator(update, context):
-    if update.message:
-        await update.message.reply_text("❌ Calculator cancelled. You can ask me any loan questions.")
-    return ConversationHandler.END
+    except KeyError:
+        # Previous answers were lost (e.g. bot restarted mid-conversation)
+        await update.message.reply_text("⌛ Session expired. Please start again with /calculator.")
+        return ConversationHandler.END
 
 # --- Property Valuation Tool Functions ---
 MEDIAN_PRICES = {
@@ -553,10 +616,7 @@ MEDIAN_PRICES = {
 }
 
 async def start_valuation(update, context):
-    try:
-        is_authed = bool(redis_client.sismember("auth_users", str(update.effective_user.id)))
-    except Exception:
-        is_authed = str(update.effective_user.id) in _auth_cache
+    is_authed = await check_auth(update.effective_user.id)
     if not is_authed:
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
@@ -575,14 +635,20 @@ async def start_valuation(update, context):
 async def select_district(update, context):
     query = update.callback_query
     await query.answer()
+    if not await check_auth(update.effective_user.id):
+        await query.edit_message_text("🔒 Please enter the password first.")
+        return ConversationHandler.END
     context.user_data['val_district'] = query.data
     district_name = query.data.replace('_', ' ').title()
     await query.edit_message_text(f"✅ Selected: **{district_name}**\n\n📏 Please enter the **Property Size in Sqm** (e.g. 150):", parse_mode='Markdown')
     return VAL_SIZE
 
 async def get_val_size(update, context):
+    sqm = parse_number(update.message.text, minimum=0, allow_min=False, maximum=10_000_000)
+    if sqm is None:
+        await update.message.reply_text("❌ Please enter a Size greater than 0 Sqm (e.g. 150):")
+        return VAL_SIZE
     try:
-        sqm = float(update.message.text.replace('sqm', '').strip())
         district = context.user_data['val_district']
         price_per_sqm = MEDIAN_PRICES[district]
         total_value = sqm * price_per_sqm
@@ -591,7 +657,7 @@ async def get_val_size(update, context):
         msg = (
             f"🏠 **Estimated Property Value**\n\n"
             f"📍 **Location:** {district_name}\n"
-            f"📏 **Size:** {sqm} Sqm\n"
+            f"📏 **Size:** {sqm:,g} Sqm\n"
             f"💲 **Indicative Price:** ${price_per_sqm:,.2f} / Sqm\n"
             f"---------------------------------\n"
             f"💰 **Total Estimated Value:** ${total_value:,.2f}\n\n"
@@ -599,20 +665,13 @@ async def get_val_size(update, context):
         )
         await update.message.reply_text(msg, parse_mode='Markdown')
         return ConversationHandler.END
-    except ValueError:
-        await update.message.reply_text("❌ Invalid format. Please enter a valid number for Sqm (e.g. 150):")
-        return VAL_SIZE
-
-async def cancel_valuation(update, context):
-    if update.message: await update.message.reply_text("❌ Valuation cancelled.")
-    return ConversationHandler.END
+    except KeyError:
+        await update.message.reply_text("⌛ Session expired. Please start again with /valuation.")
+        return ConversationHandler.END
 
 # --- Loan Pre-approval Scoring Functions ---
 async def start_score(update, context):
-    try:
-        is_authed = bool(redis_client.sismember("auth_users", str(update.effective_user.id)))
-    except Exception:
-        is_authed = str(update.effective_user.id) in _auth_cache
+    is_authed = await check_auth(update.effective_user.id)
     if not is_authed:
         if update.message: await update.message.reply_text("🔒 Please enter password.")
         return ConversationHandler.END
@@ -621,41 +680,44 @@ async def start_score(update, context):
     return SCORE_INCOME
 
 async def get_score_income(update, context):
-    try:
-        context.user_data['score_income'] = float(update.message.text.replace(',', '').replace('$', ''))
-        await update.message.reply_text("💳 Enter existing **Total Monthly Debts/Outgoings** in USD (e.g. 500):", parse_mode='Markdown')
-        return SCORE_DEBT
-    except ValueError:
-        await update.message.reply_text("❌ Invalid number. Try again (e.g. 3000):")
+    income = parse_number(update.message.text, minimum=0, allow_min=False)
+    if income is None:
+        await update.message.reply_text("❌ Please enter a Monthly Income greater than 0 (e.g. 3000):")
         return SCORE_INCOME
+    context.user_data['score_income'] = income
+    await update.message.reply_text("💳 Enter existing **Total Monthly Debts/Outgoings** in USD (e.g. 500, or 0 if none):", parse_mode='Markdown')
+    return SCORE_DEBT
 
 async def get_score_debt(update, context):
-    try:
-        context.user_data['score_debt'] = float(update.message.text.replace(',', '').replace('$', ''))
-        await update.message.reply_text("🏢 Enter the **Target Property Value** in USD (e.g. 150000):", parse_mode='Markdown')
-        return SCORE_PROP_VALUE
-    except ValueError:
-        await update.message.reply_text("❌ Invalid number. Try again (e.g. 500):")
+    debt = parse_number(update.message.text, minimum=0)
+    if debt is None:
+        await update.message.reply_text("❌ Please enter 0 or a positive number (e.g. 500):")
         return SCORE_DEBT
+    context.user_data['score_debt'] = debt
+    await update.message.reply_text("🏢 Enter the **Target Property Value** in USD (e.g. 150000):", parse_mode='Markdown')
+    return SCORE_PROP_VALUE
 
 async def get_score_prop_value(update, context):
-    try:
-        context.user_data['score_prop_value'] = float(update.message.text.replace(',', '').replace('$', ''))
-        await update.message.reply_text("💰 Enter the **Requested Loan Amount** in USD (e.g. 100000):", parse_mode='Markdown')
-        return SCORE_LOAN_AMOUNT
-    except ValueError:
-        await update.message.reply_text("❌ Invalid number. Try again (e.g. 150000):")
+    prop_value = parse_number(update.message.text, minimum=0, allow_min=False)
+    if prop_value is None:
+        await update.message.reply_text("❌ Please enter a Property Value greater than 0 (e.g. 150000):")
         return SCORE_PROP_VALUE
+    context.user_data['score_prop_value'] = prop_value
+    await update.message.reply_text("💰 Enter the **Requested Loan Amount** in USD (e.g. 100000):", parse_mode='Markdown')
+    return SCORE_LOAN_AMOUNT
 
 async def get_score_loan_amount(update, context):
+    loan_amount = parse_number(update.message.text, minimum=0, allow_min=False)
+    if loan_amount is None:
+        await update.message.reply_text("❌ Please enter a Loan Amount greater than 0 (e.g. 100000):")
+        return SCORE_LOAN_AMOUNT
     try:
-        loan_amount = float(update.message.text.replace(',', '').replace('$', ''))
         income = context.user_data['score_income']
         debt = context.user_data['score_debt']
         prop_value = context.user_data['score_prop_value']
         
         # Calculate LTV
-        ltv = (loan_amount / prop_value) * 100 if prop_value > 0 else 0
+        ltv = (loan_amount / prop_value) * 100
         
         # Estimate new EMI roughly (assuming 8.5% over 20 years for a quick test)
         monthly_rate = (8.5 / 100) / 12
@@ -666,7 +728,7 @@ async def get_score_loan_amount(update, context):
             estimated_emi = loan_amount / months
             
         total_debt_proposed = debt + estimated_emi
-        dsr = (total_debt_proposed / income) * 100 if income > 0 else 100
+        dsr = (total_debt_proposed / income) * 100
         
         # Risk Assessment
         risk_level = "✅ **LOW RISK** (Likely Approved)"
@@ -703,13 +765,15 @@ async def get_score_loan_amount(update, context):
         )
         await update.message.reply_text(msg, parse_mode='Markdown')
         return ConversationHandler.END
-        
-    except ValueError:
-        await update.message.reply_text("❌ Invalid number. Try again (e.g. 100000):")
-        return SCORE_LOAN_AMOUNT
+    except KeyError:
+        await update.message.reply_text("⌛ Session expired. Please start again with /score.")
+        return ConversationHandler.END
 
-async def cancel_score(update, context):
-    if update.message: await update.message.reply_text("❌ Scoring cancelled.")
+# --- /cancel ---
+async def cancel(update, context):
+    context.user_data.clear()
+    if update.message:
+        await update.message.reply_text("❌ Cancelled. Use the Menu button to start again.")
     return ConversationHandler.END
 # --------------------------------
 
@@ -723,161 +787,181 @@ async def myid(update, context):
     )
 
 # --- Admin Panel ---
+ADMIN_KEYBOARD = InlineKeyboardMarkup([
+    [InlineKeyboardButton("👥 View All Users", callback_data='admin_view')],
+    [InlineKeyboardButton("❌ Revoke User", callback_data='admin_revoke'),
+     InlineKeyboardButton("➕ Add User", callback_data='admin_add')],
+    [InlineKeyboardButton("📢 Broadcast", callback_data='admin_broadcast')]
+])
+DB_ERROR = "❌ Database is unavailable right now. Please try /admin again in a moment."
+
+async def admin_menu_text():
+    try:
+        user_count = await redis_call(redis_client.scard, "auth_users")
+    except Exception as e:
+        print(f"Redis error in admin menu: {e}")
+        user_count = "?"
+    return (f"👑 **Admin Panel**\n\n"
+            f"📊 Total Authenticated Users: `{user_count}`\n\n"
+            f"Select an action:")
+
+async def load_users():
+    """Return [(uid, name, username)] for all authenticated users."""
+    members = await redis_call(redis_client.smembers, "auth_users")
+    uids = sorted(members or [], key=lambda u: (not str(u).isdigit(), str(u)))
+    infos = await asyncio.gather(*(redis_call(redis_client.hgetall, f"user_info:{u}") for u in uids))
+    return [(u, (i or {}).get("name") or "Unknown", (i or {}).get("username") or "")
+            for u, i in zip(uids, infos)]
+
 async def admin_panel(update, context):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Access denied. You are not the admin.")
         return ConversationHandler.END
-    user_count = redis_client.scard("auth_users")
-    keyboard = [
-        [InlineKeyboardButton("👥 View All Users", callback_data='admin_view')],
-        [InlineKeyboardButton("❌ Revoke User", callback_data='admin_revoke'),
-         InlineKeyboardButton("➕ Add User", callback_data='admin_add')],
-        [InlineKeyboardButton("📢 Broadcast", callback_data='admin_broadcast')]
-    ]
-    await update.message.reply_text(
-        f"👑 **Admin Panel**\n\n"
-        f"📊 Total Authenticated Users: `{user_count}`\n\n"
-        f"Select an action:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
-    )
+    await update.message.reply_text(await admin_menu_text(), reply_markup=ADMIN_KEYBOARD, parse_mode='Markdown')
     return ADMIN_MENU
 
 async def admin_callback(update, context):
     query = update.callback_query
     await query.answer()
-    if query.data == 'admin_view':
-        members = redis_client.smembers("auth_users")
-        if not members:
+    if update.effective_user.id != ADMIN_ID:
+        await query.edit_message_text("❌ Access denied.")
+        return ConversationHandler.END
+
+    if query.data == 'admin_back':
+        await query.edit_message_text(await admin_menu_text(), reply_markup=ADMIN_KEYBOARD, parse_mode='Markdown')
+        return ADMIN_MENU
+
+    if query.data in ('admin_view', 'admin_revoke'):
+        try:
+            users = await load_users()
+        except Exception as e:
+            print(f"Redis error loading users: {e}")
+            await query.edit_message_text(DB_ERROR)
+            return ConversationHandler.END
+        if not users:
             await query.edit_message_text("📭 No authenticated users found.")
             return ConversationHandler.END
-        user_list = ""
-        for i, uid in enumerate(sorted(members), 1):
-            info = redis_client.hgetall(f"user_info:{uid}")
-            name = info.get("name", "Unknown") if info else "Unknown"
-            username = info.get("username", "") if info else ""
-            username_str = f" (@{username})" if username else ""
-            user_list += f"`{i}.` `{uid}` — {name}{username_str}\n"
-        await query.edit_message_text(
-            f"👥 **Authenticated Users ({len(members)})**\n\n{user_list}\nUse /admin to go back.",
-            parse_mode='Markdown'
-        )
-        return ConversationHandler.END
-    elif query.data == 'admin_revoke':
-        members = redis_client.smembers("auth_users")
-        if not members:
-            await query.edit_message_text("📭 No users to revoke.")
+
+        if query.data == 'admin_view':
+            lines = [f"`{n}.` `{uid}` — {md(name)}" + (f" (@{md(username)})" if username else "")
+                     for n, (uid, name, username) in enumerate(users, 1)]
+            text = f"👥 **Authenticated Users ({len(users)})**\n\n" + "\n".join(lines) + "\n\nUse /admin to go back."
+            chunks = split_text(text)
+            await query.edit_message_text(chunks[0], parse_mode='Markdown')
+            for chunk in chunks[1:]:
+                await query.message.reply_text(chunk, parse_mode='Markdown')
             return ConversationHandler.END
-        keyboard = []
-        for uid in sorted(members):
-            info = redis_client.hgetall(f"user_info:{uid}")
-            name = info.get("name", "Unknown") if info else "Unknown"
-            username = info.get("username", "") if info else ""
-            label = f"❌ {name} (@{username})" if username else f"❌ {name} [{uid}]"
-            keyboard.append([InlineKeyboardButton(label, callback_data=f"revoke_{uid}")])
+
+        # admin_revoke — button labels are plain text, no Markdown needed
+        keyboard = [[InlineKeyboardButton(
+                        f"❌ {name} (@{username})" if username else f"❌ {name} [{uid}]",
+                        callback_data=f"revoke_{uid}")]
+                    for uid, name, username in users[:95]]   # Telegram allows max 100 buttons
         keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="admin_back")])
-        await query.edit_message_text(
-            "❌ **Select user to revoke access:**",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
-        )
+        await query.edit_message_text("❌ **Select user to revoke access:**",
+                                      reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return ADMIN_REVOKE_INPUT
-    elif query.data == 'admin_back':
-        user_count = redis_client.scard("auth_users")
-        keyboard = [
-            [InlineKeyboardButton("👥 View All Users", callback_data='admin_view')],
-            [InlineKeyboardButton("❌ Revoke User", callback_data='admin_revoke'),
-             InlineKeyboardButton("➕ Add User", callback_data='admin_add')],
-            [InlineKeyboardButton("📢 Broadcast", callback_data='admin_broadcast')]
-        ]
-        await query.edit_message_text(
-            f"👑 **Admin Panel**\n\n"
-            f"📊 Total Authenticated Users: `{user_count}`\n\n"
-            f"Select an action:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
-        )
-        return ADMIN_MENU
-    elif query.data == 'admin_add':
+
+    if query.data == 'admin_add':
         await query.edit_message_text(
             "➕ **Add User Access**\n\nEnter the **User ID** to grant access:\n_(Send /cancel to abort)_",
-            parse_mode='Markdown'
-        )
+            parse_mode='Markdown')
         return ADMIN_ADD_INPUT
-    elif query.data == 'admin_broadcast':
+
+    if query.data == 'admin_broadcast':
         await query.edit_message_text(
             "📢 **Broadcast Message**\n\nType message to send to ALL users:\n_(Send /cancel to abort)_",
-            parse_mode='Markdown'
-        )
+            parse_mode='Markdown')
         return ADMIN_BROADCAST_INPUT
+
+    return ADMIN_MENU
 
 async def admin_revoke_callback(update, context):
     query = update.callback_query
-    await query.answer()
     if query.data == 'admin_back':
-        try:
-            user_count = redis_client.scard("auth_users")
-        except Exception:
-            user_count = "?"
-        keyboard = [
-            [InlineKeyboardButton("👥 View All Users", callback_data='admin_view')],
-            [InlineKeyboardButton("❌ Revoke User", callback_data='admin_revoke'),
-             InlineKeyboardButton("➕ Add User", callback_data='admin_add')],
-            [InlineKeyboardButton("📢 Broadcast", callback_data='admin_broadcast')]
-        ]
-        await query.edit_message_text(
-            f"👑 **Admin Panel**\n\n"
-            f"📊 Total Authenticated Users: `{user_count}`\n\n"
-            f"Select an action:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
-        )
-        return ADMIN_MENU
-    target_id = query.data.replace("revoke_", "")
+        return await admin_callback(update, context)
+    await query.answer()
+    if update.effective_user.id != ADMIN_ID:
+        await query.edit_message_text("❌ Access denied.")
+        return ConversationHandler.END
+    target_id = query.data.replace("revoke_", "", 1)
+    _auth_cache.discard(target_id)
+    if target_id.isdigit():
+        user_conversations.pop(int(target_id), None)
     try:
-        removed = redis_client.srem("auth_users", target_id)
-        if removed:
-            await query.edit_message_text(f"✅ User `{target_id}` access **revoked** successfully.", parse_mode='Markdown')
-        else:
-            await query.edit_message_text(f"⚠️ User `{target_id}` not found.", parse_mode='Markdown')
+        removed = await redis_call(redis_client.srem, "auth_users", target_id)
     except Exception as e:
-        await query.edit_message_text(f"❌ Error: {e}")
+        print(f"Redis error revoking user: {e}")
+        await query.edit_message_text(DB_ERROR)
+        return ConversationHandler.END
+    if removed:
+        await query.edit_message_text(f"✅ User `{target_id}` access **revoked** successfully.", parse_mode='Markdown')
+    else:
+        await query.edit_message_text(f"⚠️ User `{target_id}` not found.", parse_mode='Markdown')
     return ConversationHandler.END
 
 async def admin_add_user(update, context):
+    if update.effective_user.id != ADMIN_ID:
+        return ConversationHandler.END
     target_id = update.message.text.strip()
+    if not target_id.isdigit():
+        await update.message.reply_text("❌ User ID must be a number (e.g. 123456789). Try again or send /cancel:")
+        return ADMIN_ADD_INPUT
     try:
-        redis_client.sadd("auth_users", target_id)
-        await update.message.reply_text(f"✅ User `{target_id}` **granted access**.", parse_mode='Markdown')
+        await redis_call(redis_client.sadd, "auth_users", target_id)
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        print(f"Redis error adding user: {e}")
+        await update.message.reply_text(DB_ERROR)
+        return ConversationHandler.END
+    _auth_cache.add(target_id)
+    await update.message.reply_text(f"✅ User `{target_id}` **granted access**.", parse_mode='Markdown')
     return ConversationHandler.END
 
 async def admin_broadcast(update, context):
-    message_text = update.message.text
-    members = redis_client.smembers("auth_users")
-    success = 0
-    fail = 0
+    if update.effective_user.id != ADMIN_ID:
+        return ConversationHandler.END
+    try:
+        members = await redis_call(redis_client.smembers, "auth_users")
+    except Exception as e:
+        print(f"Redis error in broadcast: {e}")
+        await update.message.reply_text(DB_ERROR)
+        return ConversationHandler.END
+    # Escape so characters like _ * ` in the message don't break Markdown
+    text = f"📢 *Admin Announcement*\n\n{md(update.message.text)}"
+    success = fail = 0
     await update.message.reply_text(f"📤 Sending to {len(members)} users...")
     for uid in members:
         try:
-            await context.bot.send_message(
-                chat_id=int(uid),
-                text=f"📢 *Admin Announcement*\n\n{message_text}",
-                parse_mode='Markdown'
-            )
+            for chunk in split_text(text):
+                await context.bot.send_message(chat_id=int(uid), text=chunk, parse_mode='Markdown')
             success += 1
-        except Exception:
+        except Exception as e:
+            print(f"Broadcast to {uid} failed: {e}")
             fail += 1
+        await asyncio.sleep(0.05)   # stay under Telegram's ~30 msgs/sec limit
     await update.message.reply_text(
         f"✅ Broadcast complete!\n📤 Sent: {success}\n❌ Failed: {fail}"
     )
     return ConversationHandler.END
 
-async def admin_cancel(update, context):
-    if update.message:
-        await update.message.reply_text("❌ Admin action cancelled.")
-    return ConversationHandler.END
+SELF_PING_INTERVAL = 10 * 60  # seconds (must be < 15 min)
+
+def _ping_once(url):
+    import urllib.request, urllib.error
+    try:
+        urllib.request.urlopen(url, timeout=30)
+    except urllib.error.HTTPError:
+        pass  # 405 etc. is fine — the request still counts as traffic
+
+async def self_ping_loop():
+    url = os.environ.get("RENDER_EXTERNAL_URL", "https://loan-bot-qyzu.onrender.com")
+    while True:
+        await asyncio.sleep(SELF_PING_INTERVAL)
+        try:
+            await asyncio.to_thread(_ping_once, url)
+            print("🔄 Self-ping OK")
+        except Exception as e:
+            print(f"Self-ping failed: {e}")
 
 def main():
     async def post_init(application):
@@ -900,18 +984,15 @@ def main():
             ], scope=BotCommandScopeChat(chat_id=ADMIN_ID))
         print("✅ Bot commands registered with Telegram.")
 
+        # Render free plan sleeps after ~15 min without inbound traffic.
+        # Ping our own public URL every 10 min so the service stays awake.
+        if os.getenv("RENDER"):
+            application.bot_data["self_ping_task"] = asyncio.create_task(self_ping_loop())
+
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     # /myid in group=-1 so it always works from any state
     app.add_handler(CommandHandler("myid", myid), group=-1)
     
-    # Common handlers to allow switching between tools from any state
-    common_handlers = [
-        MessageHandler(filters.Regex("^🧮 Calculator$"), start_calculator),
-        MessageHandler(filters.Regex("^📋 Score$"), start_score),
-        MessageHandler(filters.Regex("^🏢 Valuation$"), start_valuation),
-        MessageHandler(filters.Regex("^👑 Admin Panel$"), admin_panel),
-    ]
-
     main_conv = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
@@ -919,38 +1000,48 @@ def main():
             CommandHandler("score", start_score),
             CommandHandler("valuation", start_valuation),
             CommandHandler("admin", admin_panel),
-            *common_handlers
+            CommandHandler("cancel", cancel),
+            # Buttons keep working even if the bot restarted (state is in memory only)
+            CallbackQueryHandler(select_method, pattern=r"^(emi|equal_principal|bullet)$"),
+            CallbackQueryHandler(select_district, pattern="^(" + "|".join(MEDIAN_PRICES) + ")$"),
         ],
         states={
             # Calculator States
-            METHOD: [*common_handlers, CallbackQueryHandler(select_method)],
-            AMOUNT: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
-            RATE: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_rate)],
-            TERM_MONTHS: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_term_months)],
+            METHOD: [CallbackQueryHandler(select_method)],
+            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_amount)],
+            RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_rate)],
+            TERM_MONTHS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_term_months)],
             
             # Valuation States
-            VAL_DISTRICT: [*common_handlers, CallbackQueryHandler(select_district)],
-            VAL_SIZE: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_val_size)],
+            VAL_DISTRICT: [CallbackQueryHandler(select_district)],
+            VAL_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_val_size)],
             
             # Score States
-            SCORE_INCOME: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_income)],
-            SCORE_DEBT: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_debt)],
-            SCORE_PROP_VALUE: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_prop_value)],
-            SCORE_LOAN_AMOUNT: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_loan_amount)],
+            SCORE_INCOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_income)],
+            SCORE_DEBT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_debt)],
+            SCORE_PROP_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_prop_value)],
+            SCORE_LOAN_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_score_loan_amount)],
             
             # Admin States
             ADMIN_MENU: [CallbackQueryHandler(admin_callback, pattern="^admin_")],
             ADMIN_REVOKE_INPUT: [CallbackQueryHandler(admin_revoke_callback, pattern="^revoke_|^admin_back$")],
-            ADMIN_ADD_INPUT: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_user)],
-            ADMIN_BROADCAST_INPUT: [*common_handlers, MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast)],
+            ADMIN_ADD_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_user)],
+            ADMIN_BROADCAST_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast)],
         },
         fallbacks=[
-            CommandHandler("cancel", start),
-            *common_handlers
+            CommandHandler("cancel", cancel),
         ],
         allow_reentry=True
     )
     app.add_handler(main_conv)
+
+    async def expired_button(update, context):
+        """Answer any button the conversation no longer knows, so it never hangs."""
+        await update.callback_query.answer(
+            "⌛ This menu has expired. Please use the command again from the Menu.",
+            show_alert=True
+        )
+    app.add_handler(CallbackQueryHandler(expired_button))
     
     async def error_handler(update, context):
         import traceback
@@ -963,7 +1054,7 @@ def main():
     app.add_error_handler(error_handler)
     
     app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message, block=False)
     )
     if os.getenv("RENDER"):
         print("✅ Starting bot via Webhook on Render...")
