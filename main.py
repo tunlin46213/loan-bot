@@ -24,11 +24,11 @@ from telegram.ext import (
 )
 
 (
-    METHOD, AMOUNT, RATE, TERM_MONTHS, 
+    METHOD, AMOUNT, RATE, TERM_MONTHS,
     VAL_DISTRICT, VAL_SIZE,
     SCORE_INCOME, SCORE_DEBT, SCORE_PROP_VALUE, SCORE_LOAN_AMOUNT,
-    ADMIN_MENU, ADMIN_REVOKE_INPUT, ADMIN_ADD_INPUT, ADMIN_BROADCAST_INPUT
-) = range(14)
+    ADMIN_MENU, ADMIN_BROADCAST_INPUT
+) = range(12)
 
 # Load .env
 load_dotenv()
@@ -724,7 +724,7 @@ async def myid(update, context):
     user = update.effective_user
     await update.message.reply_text(
         f"🆔 **Your Telegram User ID:**\n\n`{user.id}`\n\n"
-        f"Share this ID with the Admin to get access, or set it as ADMIN\\_ID in Render environment variables.",
+        f"You can share this ID with the Admin, or set it as ADMIN\\_ID in Render to become the admin.",
         parse_mode='Markdown'
     )
 
