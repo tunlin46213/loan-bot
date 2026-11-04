@@ -826,24 +826,24 @@ async def admin_broadcast(update, context):
     )
     return ConversationHandler.END
 
-SELF_PING_INTERVAL = 10 * 60  # seconds (must be < 15 min)
+SELF_PING_INTERVAL = 5 * 60  # ping every 5 min — well under Render's 15-min sleep threshold
 
 def _ping_once(url):
     import urllib.request, urllib.error
     try:
         urllib.request.urlopen(url, timeout=30)
     except urllib.error.HTTPError:
-        pass  # 405 etc. is fine — the request still counts as traffic
+        pass  # 4xx/5xx still counts as inbound traffic for Render
 
 async def self_ping_loop():
     url = os.environ.get("RENDER_EXTERNAL_URL", "https://loan-bot-qyzu.onrender.com")
     while True:
-        await asyncio.sleep(SELF_PING_INTERVAL)
         try:
             await asyncio.to_thread(_ping_once, url)
             print("🔄 Self-ping OK")
         except Exception as e:
             print(f"Self-ping failed: {e}")
+        await asyncio.sleep(SELF_PING_INTERVAL)  # ping first, then wait
 
 def main():
     async def post_init(application):
