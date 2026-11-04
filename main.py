@@ -966,6 +966,12 @@ async def self_ping_loop():
 def main():
     async def post_init(application):
         """Auto-register bot commands so they appear in Telegram Menu button."""
+        # Clear any stale webhook so polling works cleanly after a webhook deployment
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=False)
+        except Exception as e:
+            print(f"Warning: could not delete webhook: {e}")
+
         # Regular user commands
         await application.bot.set_my_commands([
             BotCommand("calculator", "Loan Amortization Calculator"),
@@ -1056,19 +1062,12 @@ def main():
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message, block=False)
     )
+    keep_alive()  # bind port so Render's health check passes on both local and cloud
     if os.getenv("RENDER"):
-        print("✅ Starting bot via Webhook on Render...")
-        PORT = int(os.environ.get('PORT', 8080))
-        RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', 'https://loan-bot-qyzu.onrender.com')
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            webhook_url=RENDER_EXTERNAL_URL
-        )
+        print("✅ Starting bot via Polling on Render...")
     else:
         print("✅ Bot is running locally via Polling...")
-        keep_alive()
-        app.run_polling()
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
