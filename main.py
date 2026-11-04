@@ -942,11 +942,11 @@ def main():
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message, block=False)
     )
-    keep_alive()  # bind port so Render's health check passes on both local and cloud
     if os.getenv("RENDER"):
+        keep_alive()  # bind port so Render's health check sees an HTTP response
         print("✅ Starting bot via Polling on Render...")
     else:
-        print("✅ Bot is running locally via Polling...")
+        print("✅ Starting bot via Polling...")
     app.run_polling()
 
 if __name__ == "__main__":
